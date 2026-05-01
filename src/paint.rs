@@ -1,5 +1,7 @@
 use cosmic_text::{Buffer, Color, FontSystem, SwashCache};
-use tiny_skia::{Color as SkColor, Pixmap, PremultipliedColorU8, Rect, Transform};
+use tiny_skia::{
+    Color as SkColor, FillRule, Path, PathBuilder, Pixmap, PremultipliedColorU8, Rect, Transform,
+};
 
 use crate::layout::{LaidBlock, LaidDoc, LaidKind, UnderlineRun};
 use crate::theme::Theme;
@@ -47,7 +49,17 @@ fn paint_block(
     swash: &mut SwashCache,
 ) {
     match &block.kind {
-        LaidKind::Text { buffer, color, underlines, strikes, .. } => {
+        LaidKind::Text {
+            buffer,
+            color,
+            underlines,
+            strikes,
+            code_runs,
+            ..
+        } => {
+            for c in code_runs {
+                draw_run_pills(pixmap, buffer, block.x, y, c, theme.inline_code_bg);
+            }
             draw_buffer(pixmap, buffer, fs, swash, block.x, y, *color);
             for u in underlines {
                 draw_run_lines(pixmap, buffer, block.x, y, u, *color, LinePos::Underline);
@@ -78,11 +90,9 @@ fn paint_block(
             border.set_color(*color);
             border.anti_alias = true;
             let size = block.h;
-            // border (outline)
             if let Some(rect) = Rect::from_xywh(block.x, y, size, size) {
                 pixmap.fill_rect(rect, &border, Transform::identity(), None);
             }
-            // inner clear
             let inset = 1.0;
             let mut bg = tiny_skia::Paint::default();
             bg.set_color(theme.bg);
@@ -105,6 +115,40 @@ fn paint_block(
                     pixmap.fill_rect(rect, &chk, Transform::identity(), None);
                 }
             }
+        }
+        LaidKind::CodeBlock {
+            buffer,
+            bg,
+            width,
+            pad_x,
+            pad_y,
+            lang_label,
+            lang_label_color,
+        } => {
+            if let Some(path) = rounded_rect(block.x, y, *width, block.h, 6.0) {
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(*bg);
+                paint.anti_alias = true;
+                pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            }
+            if let Some(label) = lang_label {
+                let label_w = label
+                    .layout_runs()
+                    .map(|r| r.line_w)
+                    .fold(0.0_f32, f32::max);
+                let lx = block.x + *width - label_w - *pad_x;
+                let ly = y + 6.0;
+                draw_buffer(pixmap, label, fs, swash, lx, ly, *lang_label_color);
+            }
+            draw_buffer(
+                pixmap,
+                buffer,
+                fs,
+                swash,
+                block.x + *pad_x,
+                y + *pad_y,
+                cosmic_text::Color::rgb(0xe6, 0xed, 0xf3),
+            );
         }
     }
 }
@@ -148,6 +192,47 @@ fn draw_run_lines(
     }
 }
 
+fn draw_run_pills(
+    pixmap: &mut Pixmap,
+    buf: &Buffer,
+    ox: f32,
+    oy: f32,
+    range: &UnderlineRun,
+    bg: SkColor,
+) {
+    let line_height = buf.metrics().line_height;
+    for run in buf.layout_runs() {
+        let mut x_start: Option<f32> = None;
+        let mut x_end: Option<f32> = None;
+        for g in run.glyphs.iter() {
+            if g.end <= range.byte_start || g.start >= range.byte_end {
+                continue;
+            }
+            let gx0 = g.x;
+            let gx1 = g.x + g.w;
+            x_start = Some(x_start.map(|s| s.min(gx0)).unwrap_or(gx0));
+            x_end = Some(x_end.map(|s| s.max(gx1)).unwrap_or(gx1));
+        }
+        if let (Some(xs), Some(xe)) = (x_start, x_end) {
+            let pad_x = 3.0;
+            let pad_y = 1.0;
+            let pill_top = run.line_top;
+            let pill_h = line_height - 2.0;
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(bg);
+            paint.anti_alias = false;
+            if let Some(rect) = Rect::from_xywh(
+                ox + xs - pad_x,
+                oy + pill_top + pad_y,
+                (xe - xs) + pad_x * 2.0,
+                pill_h - pad_y * 2.0,
+            ) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+        }
+    }
+}
+
 fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
     let mut paint = tiny_skia::Paint::default();
     paint.set_color(SkColor::from_rgba8(c.r(), c.g(), c.b(), c.a()));
@@ -155,6 +240,22 @@ fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
     if let Some(rect) = Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)) {
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
+}
+
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    pb.finish()
 }
 
 pub fn draw_buffer(
