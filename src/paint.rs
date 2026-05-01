@@ -398,8 +398,9 @@ fn paint_table_cell(
     cell: &TableCellLayout,
     theme: &Theme,
 ) {
-    let pad_x = crate::layout::TABLE_CELL_PAD_X;
-    let pad_y = crate::layout::TABLE_CELL_PAD_Y;
+    // Use proportionally based on cell width: ~12 base or scaled.
+    let pad_x = (cell.w * 0.04).clamp(6.0, 24.0);
+    let pad_y = (pad_x * 0.7).max(6.0);
 
     let cell_text_w = (cell.w - pad_x * 2.0).max(0.0);
     let actual_text_w = cell.buffer
