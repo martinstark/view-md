@@ -1,7 +1,8 @@
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
-use tiny_skia::{Color as SkColor, Pixmap, PremultipliedColorU8};
+use cosmic_text::{Buffer, Color, FontSystem, SwashCache};
+use tiny_skia::{Color as SkColor, Pixmap, PremultipliedColorU8, Rect, Transform};
 
-use crate::text::FONT_SANS;
+use crate::layout::{LaidBlock, LaidDoc, LaidKind, UnderlineRun};
+use crate::theme::Theme;
 
 pub struct Painter {
     pub fs: FontSystem,
@@ -10,46 +11,149 @@ pub struct Painter {
 
 impl Painter {
     pub fn new(fs: FontSystem) -> Self {
-        Self {
-            fs,
-            swash: SwashCache::new(),
+        Self { fs, swash: SwashCache::new() }
+    }
+
+    pub fn paint_doc(
+        &mut self,
+        pixmap: &mut Pixmap,
+        doc: &LaidDoc,
+        theme: &Theme,
+        scroll_y: f32,
+    ) {
+        pixmap.fill(theme.bg);
+        let h = pixmap.height() as f32;
+
+        for block in &doc.blocks {
+            let by = block.y - scroll_y;
+            if by + block.h < 0.0 || by > h {
+                continue;
+            }
+            paint_block(pixmap, block, by, theme, &mut self.fs, &mut self.swash);
         }
     }
 
-    pub fn paint_placeholder(&mut self, pixmap: &mut Pixmap, dark: bool) {
-        let (bg, fg) = if dark {
-            (
-                SkColor::from_rgba8(0x0d, 0x11, 0x17, 0xff),
-                Color::rgb(0xe6, 0xed, 0xf3),
-            )
-        } else {
-            (
-                SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff),
-                Color::rgb(0x1f, 0x23, 0x28),
-            )
-        };
-        pixmap.fill(bg);
+    pub fn paint_blank(&mut self, pixmap: &mut Pixmap, theme: &Theme) {
+        pixmap.fill(theme.bg);
+    }
+}
 
-        let metrics = Metrics::new(28.0, 36.0);
-        let mut buf = Buffer::new(&mut self.fs, metrics);
-        buf.set_size(
-            &mut self.fs,
-            Some(pixmap.width() as f32),
-            Some(pixmap.height() as f32),
-        );
-        let attrs = Attrs::new().family(Family::Name(FONT_SANS));
-        buf.set_text(&mut self.fs, "mdv", attrs, Shaping::Advanced);
-        buf.shape_until_scroll(&mut self.fs, false);
+fn paint_block(
+    pixmap: &mut Pixmap,
+    block: &LaidBlock,
+    y: f32,
+    theme: &Theme,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+) {
+    match &block.kind {
+        LaidKind::Text { buffer, color, underlines, strikes, .. } => {
+            draw_buffer(pixmap, buffer, fs, swash, block.x, y, *color);
+            for u in underlines {
+                draw_run_lines(pixmap, buffer, block.x, y, u, *color, LinePos::Underline);
+            }
+            for s in strikes {
+                draw_run_lines(pixmap, buffer, block.x, y, s, *color, LinePos::Strike);
+            }
+        }
+        LaidKind::Rule => {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(theme.rule);
+            paint.anti_alias = false;
+            let w = pixmap.width() as f32 - block.x * 2.0;
+            if let Some(rect) = Rect::from_xywh(block.x, y, w, 1.0) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+        }
+        LaidKind::Bar { color, width } => {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(*color);
+            paint.anti_alias = false;
+            if let Some(rect) = Rect::from_xywh(block.x, y, *width, block.h) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+        }
+        LaidKind::TaskBox { checked, color, fg } => {
+            let mut border = tiny_skia::Paint::default();
+            border.set_color(*color);
+            border.anti_alias = true;
+            let size = block.h;
+            // border (outline)
+            if let Some(rect) = Rect::from_xywh(block.x, y, size, size) {
+                pixmap.fill_rect(rect, &border, Transform::identity(), None);
+            }
+            // inner clear
+            let inset = 1.0;
+            let mut bg = tiny_skia::Paint::default();
+            bg.set_color(theme.bg);
+            if let Some(rect) = Rect::from_xywh(
+                block.x + inset,
+                y + inset,
+                size - inset * 2.0,
+                size - inset * 2.0,
+            ) {
+                pixmap.fill_rect(rect, &bg, Transform::identity(), None);
+            }
+            if *checked {
+                let mut chk = tiny_skia::Paint::default();
+                chk.set_color(*fg);
+                chk.anti_alias = true;
+                let pad = size * 0.20;
+                if let Some(rect) =
+                    Rect::from_xywh(block.x + pad, y + pad, size - pad * 2.0, size - pad * 2.0)
+                {
+                    pixmap.fill_rect(rect, &chk, Transform::identity(), None);
+                }
+            }
+        }
+    }
+}
 
-        let text_w: f32 = buf
-            .layout_runs()
-            .map(|r| r.line_w)
-            .fold(0.0_f32, f32::max);
-        let text_h = metrics.line_height;
-        let ox = (pixmap.width() as f32 - text_w) / 2.0;
-        let oy = (pixmap.height() as f32 - text_h) / 2.0;
+#[derive(Clone, Copy)]
+enum LinePos {
+    Underline,
+    Strike,
+}
 
-        draw_buffer(pixmap, &buf, &mut self.fs, &mut self.swash, ox, oy, fg);
+fn draw_run_lines(
+    pixmap: &mut Pixmap,
+    buf: &Buffer,
+    ox: f32,
+    oy: f32,
+    range: &UnderlineRun,
+    color: Color,
+    pos: LinePos,
+) {
+    let line_height = buf.metrics().line_height;
+    for run in buf.layout_runs() {
+        let mut x_start: Option<f32> = None;
+        let mut x_end: Option<f32> = None;
+        for g in run.glyphs.iter() {
+            if g.end <= range.byte_start || g.start >= range.byte_end {
+                continue;
+            }
+            let gx0 = g.x;
+            let gx1 = g.x + g.w;
+            x_start = Some(x_start.map(|s| s.min(gx0)).unwrap_or(gx0));
+            x_end = Some(x_end.map(|s| s.max(gx1)).unwrap_or(gx1));
+        }
+        if let (Some(xs), Some(xe)) = (x_start, x_end) {
+            let baseline_y = run.line_y;
+            let underline_y = match pos {
+                LinePos::Underline => baseline_y + 2.0,
+                LinePos::Strike => baseline_y - line_height * 0.30,
+            };
+            fill_line(pixmap, ox + xs, oy + underline_y, xe - xs, 1.0, color);
+        }
+    }
+}
+
+fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(SkColor::from_rgba8(c.r(), c.g(), c.b(), c.a()));
+    paint.anti_alias = false;
+    if let Some(rect) = Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
 }
 
@@ -68,12 +172,12 @@ pub fn draw_buffer(
         if c.a() == 0 || w == 0 || h == 0 {
             return;
         }
-        let px = x as f32 + ox;
-        let py = y as f32 + oy;
+        let bx = x + ox as i32;
+        let by = y + oy as i32;
         for dy in 0..h as i32 {
             for dx in 0..w as i32 {
-                let fx = px as i32 + dx;
-                let fy = py as i32 + dy;
+                let fx = bx + dx;
+                let fy = by + dy;
                 if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
                     continue;
                 }
