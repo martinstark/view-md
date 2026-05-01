@@ -1,8 +1,3 @@
-node_modules/
-dist/
-src-tauri/target/
-src-tauri/gen/schemas/
-public/gh-light.css
-public/gh-dark.css
+target/
 *.log
 .DS_Store
