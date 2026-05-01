@@ -5,6 +5,7 @@ pub mod inline;
 pub mod layout;
 pub mod licenses;
 pub mod paint;
+pub mod state;
 pub mod text;
 pub mod theme;
 pub mod trace;
@@ -37,11 +38,16 @@ pub fn run(source: String, title: String) {
     let event_loop = EventLoop::new().expect("event loop");
     crate::trace!("event_loop_created");
 
+    let prefs = crate::state::load();
+    let dark = prefs.theme.unwrap_or_else(detect_dark);
+    let zoom = prefs.zoom.unwrap_or(1.0).clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
+
     let mut app = App {
         title,
         doc,
         painter: Painter::new(fs),
-        dark: detect_dark(),
+        dark,
+        zoom,
         scroll_y: 0.0,
         window: None,
         surface: None,

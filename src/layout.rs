@@ -34,6 +34,8 @@ pub struct LaidDoc {
     pub width: f32,
     pub content_x: f32,
     pub content_w: f32,
+    pub heading_ys: Vec<f32>,
+    pub block_ys: Vec<f32>,
 }
 
 pub struct LaidBlock {
@@ -110,27 +112,57 @@ pub fn layout(
     fs: &mut FontSystem,
     theme: &Theme,
     full_highlight: bool,
+    zoom: f32,
 ) -> LaidDoc {
-    let content_w = (surface_w - PAD_X_MIN * 2.0).min(MAX_CONTENT_W).max(120.0);
+    let content_w = (surface_w - PAD_X_MIN * 2.0).min(MAX_CONTENT_W * zoom).max(120.0);
     let content_x = ((surface_w - content_w) / 2.0).max(PAD_X_MIN);
 
-    let ctx = Ctx { full_highlight };
-    let (mut blocks, h) = layout_blocks(&doc.blocks, content_w, content_x, fs, theme, &ctx);
+    let ctx = Ctx { full_highlight, zoom };
+
+    // Track heading/block y-positions before children are laid out.
+    let mut heading_ys = Vec::new();
+    let mut block_ys = Vec::new();
+
+    let mut y = 0.0_f32;
+    let mut blocks: Vec<LaidBlock> = Vec::new();
+    for (i, block) in doc.blocks.iter().enumerate() {
+        if i > 0 {
+            let gap = if matches!(block, Block::Heading { .. }) {
+                HEADING_GAP_TOP * zoom
+            } else {
+                BLOCK_GAP * zoom
+            };
+            y += gap;
+        }
+        block_ys.push(y + PAD_Y);
+        if matches!(block, Block::Heading { .. }) {
+            heading_ys.push(y + PAD_Y);
+        }
+        let (mut laid, dy) = layout_block(block, content_w, content_x, fs, theme, &ctx);
+        for lb in laid.iter_mut() {
+            lb.y += y;
+        }
+        blocks.extend(laid);
+        y += dy;
+    }
     for b in blocks.iter_mut() {
         b.y += PAD_Y;
     }
 
     LaidDoc {
         blocks,
-        total_height: h + PAD_Y * 2.0,
+        total_height: y + PAD_Y * 2.0,
         width: surface_w,
         content_x,
         content_w,
+        heading_ys,
+        block_ys,
     }
 }
 
 struct Ctx {
     full_highlight: bool,
+    zoom: f32,
 }
 
 fn layout_blocks(
@@ -170,16 +202,17 @@ fn layout_block(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
+    let z = ctx.zoom;
     match block {
         Block::Heading { level, inlines } => {
-            let size = heading_size(*level);
+            let size = heading_size(*level) * z;
             text_block(inlines, theme.heading, size, size * 1.25, w, x, fs, theme, true)
         }
         Block::Paragraph(inlines) => text_block(
             inlines,
             theme.fg,
-            BODY_FS,
-            BODY_FS * BODY_LH_RATIO,
+            BODY_FS * z,
+            BODY_FS * z * BODY_LH_RATIO,
             w,
             x,
             fs,
@@ -388,9 +421,10 @@ fn layout_code_block(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
+    let z = ctx.zoom;
     let inner_w = (w - CODE_PAD_X * 2.0).max(80.0);
     let spans = highlight(code.trim_end_matches('\n'), lang, theme.is_dark, ctx.full_highlight);
-    let buf = build_highlighted_buffer(fs, &spans, CODE_FS, CODE_FS * CODE_LH_RATIO, inner_w);
+    let buf = build_highlighted_buffer(fs, &spans, CODE_FS * z, CODE_FS * z * CODE_LH_RATIO, inner_w);
     let inner_h = buffer_height(&buf);
     let block_h = inner_h + CODE_PAD_Y * 2.0;
     let lang_label = if !lang.is_empty() {
