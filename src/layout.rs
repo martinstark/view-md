@@ -65,6 +65,7 @@ pub enum LaidKind {
         pad_y: f32,
         lang_label: Option<Buffer>,
         lang_label_color: Color,
+        source: String,
     },
     Table {
         block_w: f32,
@@ -452,6 +453,7 @@ fn layout_code_block(
                 pad_y: CODE_PAD_Y,
                 lang_label,
                 lang_label_color: theme.muted,
+                source: code.trim_end_matches('\n').to_string(),
             },
         }],
         block_h,

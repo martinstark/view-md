@@ -1,17 +1,18 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
+use cosmic_text::Cursor;
 use softbuffer::{Context, Surface};
 use tiny_skia::Pixmap;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::doc::Doc;
-use crate::layout::{LaidDoc, layout};
+use crate::layout::{LaidDoc, LaidKind, layout};
 use crate::paint::{Painter, pixmap_to_softbuffer};
 use crate::state::{self, Prefs};
 use crate::theme::Theme;
@@ -40,6 +41,49 @@ pub struct App {
     pub painted_once: bool,
     pub full_highlight: bool,
     pub upgrade_pending: bool,
+    pub help_visible: bool,
+    pub cursor: PhysicalPosition<f64>,
+    pub selection: Option<Selection>,
+    pub dragging: bool,
+    pub modifiers: Modifiers,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HitPoint {
+    pub block_idx: usize,
+    pub cursor: Cursor,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Selection {
+    pub anchor: HitPoint,
+    pub head: HitPoint,
+}
+
+impl Selection {
+    pub fn ordered(&self) -> (HitPoint, HitPoint) {
+        let a = self.anchor;
+        let b = self.head;
+        if a.block_idx < b.block_idx
+            || (a.block_idx == b.block_idx && cursor_le(&a.cursor, &b.cursor))
+        {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        let (a, b) = self.ordered();
+        a.block_idx == b.block_idx && a.cursor.line == b.cursor.line && a.cursor.index == b.cursor.index
+    }
+}
+
+fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
+    if a.line != b.line {
+        a.line < b.line
+    } else {
+        a.index <= b.index
+    }
 }
 
 impl ApplicationHandler for App {
@@ -100,6 +144,52 @@ impl ApplicationHandler for App {
                 self.scroll_by(dy);
                 self.request_redraw();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position;
+                if self.dragging {
+                    if let Some(hit) = self.hit_test(position.x as f32, position.y as f32) {
+                        if let Some(sel) = self.selection.as_mut() {
+                            sel.head = hit;
+                        }
+                        self.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                match state {
+                    ElementState::Pressed => {
+                        if let Some(hit) =
+                            self.hit_test(self.cursor.x as f32, self.cursor.y as f32)
+                        {
+                            self.selection = Some(Selection { anchor: hit, head: hit });
+                            self.dragging = true;
+                            self.request_redraw();
+                        } else {
+                            self.selection = None;
+                            self.dragging = false;
+                            self.request_redraw();
+                        }
+                    }
+                    ElementState::Released => {
+                        let was_dragging = self.dragging;
+                        self.dragging = false;
+                        if let Some(sel) = self.selection {
+                            if sel.is_empty() {
+                                self.selection = None;
+                                if was_dragging {
+                                    if let Some(href) = self.link_at_cursor() {
+                                        let _ = opener::open(&href);
+                                    }
+                                }
+                                self.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -123,7 +213,28 @@ impl App {
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: Key) {
+        if self.modifiers.state().control_key() {
+            if matches!(key.as_ref(), Key::Character("c") | Key::Character("C")) {
+                self.copy_selection();
+                return;
+            }
+        }
+        if self.help_visible {
+            match key.as_ref() {
+                Key::Character("?") | Key::Named(NamedKey::Escape) | Key::Character("q") => {
+                    self.help_visible = false;
+                    self.request_redraw();
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.as_ref() {
+            Key::Character("?") => {
+                self.help_visible = true;
+                self.request_redraw();
+            }
+            Key::Character("y") => self.yank_visible_code(),
             Key::Character("q") | Key::Named(NamedKey::Escape) => event_loop.exit(),
             Key::Character("t") => {
                 self.dark = !self.dark;
@@ -271,6 +382,111 @@ impl App {
         });
     }
 
+    fn yank_visible_code(&mut self) {
+        let Some(laid) = self.laid.as_ref() else { return };
+        let viewport_top = self.scroll_y;
+        let viewport_bottom = self.scroll_y + self.viewport_h();
+        let viewport_center = (viewport_top + viewport_bottom) / 2.0;
+        let mut best: Option<(f32, &str)> = None;
+        for block in &laid.blocks {
+            if let LaidKind::CodeBlock { source, .. } = &block.kind {
+                if block.y + block.h < viewport_top || block.y > viewport_bottom {
+                    continue;
+                }
+                let center = block.y + block.h / 2.0;
+                let dist = (center - viewport_center).abs();
+                if best.map_or(true, |(d, _)| dist < d) {
+                    best = Some((dist, source.as_str()));
+                }
+            }
+        }
+        if let Some((_, src)) = best {
+            if let Ok(mut clip) = arboard::Clipboard::new() {
+                let _ = clip.set_text(src.to_string());
+            }
+        }
+    }
+
+    fn hit_test(&self, win_x: f32, win_y: f32) -> Option<HitPoint> {
+        let laid = self.laid.as_ref()?;
+        let dy = win_y + self.scroll_y;
+        let dx = win_x;
+        for (i, block) in laid.blocks.iter().enumerate() {
+            if dy < block.y || dy > block.y + block.h {
+                continue;
+            }
+            match &block.kind {
+                LaidKind::Text { buffer, .. } => {
+                    let lx = dx - block.x;
+                    let ly = dy - block.y;
+                    if let Some(c) = buffer.hit(lx, ly) {
+                        return Some(HitPoint { block_idx: i, cursor: c });
+                    }
+                }
+                LaidKind::CodeBlock { buffer, pad_x, pad_y, .. } => {
+                    let lx = dx - block.x - *pad_x;
+                    let ly = dy - block.y - *pad_y;
+                    if let Some(c) = buffer.hit(lx, ly) {
+                        return Some(HitPoint { block_idx: i, cursor: c });
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn copy_selection(&self) {
+        let Some(sel) = self.selection else { return };
+        if sel.is_empty() {
+            return;
+        }
+        let Some(laid) = self.laid.as_ref() else { return };
+        let (start, end) = sel.ordered();
+        let text = collect_selection_text(laid, &start, &end);
+        if !text.is_empty() {
+            if let Ok(mut clip) = arboard::Clipboard::new() {
+                let _ = clip.set_text(text);
+            }
+        }
+    }
+
+    fn link_at_cursor(&self) -> Option<String> {
+        let laid = self.laid.as_ref()?;
+        let cx = self.cursor.x as f32;
+        let cy = self.cursor.y as f32 + self.scroll_y;
+        for block in &laid.blocks {
+            if cy < block.y || cy > block.y + block.h {
+                continue;
+            }
+            if let LaidKind::Text { buffer, links, .. } = &block.kind {
+                if links.is_empty() {
+                    continue;
+                }
+                let local_x = cx - block.x;
+                let local_y = cy - block.y;
+                for run in buffer.layout_runs() {
+                    let run_top = run.line_top;
+                    let run_bot = run_top + buffer.metrics().line_height;
+                    if local_y < run_top || local_y > run_bot {
+                        continue;
+                    }
+                    for g in run.glyphs.iter() {
+                        if local_x < g.x || local_x > g.x + g.w {
+                            continue;
+                        }
+                        for link in links {
+                            if g.start >= link.byte_start && g.end <= link.byte_end {
+                                return Some(link.href.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn redraw(&mut self) {
         if self.upgrade_pending {
             self.upgrade_pending = false;
@@ -295,6 +511,18 @@ impl App {
             self.painter.paint_blank(pixmap, &theme);
         }
 
+        if let Some(sel) = self.selection {
+            if !sel.is_empty() {
+                if let Some(laid) = self.laid.as_ref() {
+                    self.painter.paint_selection(pixmap, laid, &sel, &theme, self.scroll_y);
+                }
+            }
+        }
+
+        if self.help_visible {
+            self.painter.paint_help_overlay(pixmap, &theme);
+        }
+
         let mut buffer = surface.buffer_mut().expect("buffer_mut");
         pixmap_to_softbuffer(pixmap, &mut buffer);
         buffer.present().expect("present");
@@ -314,4 +542,91 @@ impl App {
 enum JumpKind {
     Heading,
     Block,
+}
+
+fn collect_selection_text(laid: &LaidDoc, start: &HitPoint, end: &HitPoint) -> String {
+    if start.block_idx == end.block_idx {
+        let block = &laid.blocks[start.block_idx];
+        return block_substring(block, &start.cursor, &end.cursor);
+    }
+    let mut out = String::new();
+    let start_block = &laid.blocks[start.block_idx];
+    out.push_str(&block_substring_from(start_block, &start.cursor));
+    out.push('\n');
+    for i in (start.block_idx + 1)..end.block_idx {
+        let b = &laid.blocks[i];
+        let text = block_full_text(b);
+        if !text.is_empty() {
+            out.push_str(&text);
+            out.push('\n');
+        }
+    }
+    let end_block = &laid.blocks[end.block_idx];
+    out.push_str(&block_substring_to(end_block, &end.cursor));
+    out
+}
+
+fn buffer_text_lines(buf: &cosmic_text::Buffer) -> Vec<&str> {
+    buf.lines.iter().map(|l| l.text()).collect()
+}
+
+fn substring_between(lines: &[&str], from: &Cursor, to: &Cursor) -> String {
+    if from.line == to.line {
+        let line = lines.get(from.line).copied().unwrap_or("");
+        let s = from.index.min(line.len());
+        let e = to.index.min(line.len());
+        return line[s..e].to_string();
+    }
+    let mut out = String::new();
+    if let Some(first) = lines.get(from.line) {
+        let s = from.index.min(first.len());
+        out.push_str(&first[s..]);
+    }
+    out.push('\n');
+    for i in (from.line + 1)..to.line {
+        if let Some(line) = lines.get(i) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if let Some(last) = lines.get(to.line) {
+        let e = to.index.min(last.len());
+        out.push_str(&last[..e]);
+    }
+    out
+}
+
+fn block_buffer(block: &crate::layout::LaidBlock) -> Option<&cosmic_text::Buffer> {
+    match &block.kind {
+        LaidKind::Text { buffer, .. } => Some(buffer),
+        LaidKind::CodeBlock { buffer, .. } => Some(buffer),
+        _ => None,
+    }
+}
+
+fn block_substring(block: &crate::layout::LaidBlock, from: &Cursor, to: &Cursor) -> String {
+    let Some(buf) = block_buffer(block) else { return String::new() };
+    let lines = buffer_text_lines(buf);
+    substring_between(&lines, from, to)
+}
+
+fn block_substring_from(block: &crate::layout::LaidBlock, from: &Cursor) -> String {
+    let Some(buf) = block_buffer(block) else { return String::new() };
+    let lines = buffer_text_lines(buf);
+    let last_line = lines.len().saturating_sub(1);
+    let to = Cursor { line: last_line, index: lines.last().map(|l| l.len()).unwrap_or(0), affinity: cosmic_text::Affinity::After };
+    substring_between(&lines, from, &to)
+}
+
+fn block_substring_to(block: &crate::layout::LaidBlock, to: &Cursor) -> String {
+    let Some(buf) = block_buffer(block) else { return String::new() };
+    let lines = buffer_text_lines(buf);
+    let from = Cursor { line: 0, index: 0, affinity: cosmic_text::Affinity::Before };
+    substring_between(&lines, &from, to)
+}
+
+fn block_full_text(block: &crate::layout::LaidBlock) -> String {
+    let Some(buf) = block_buffer(block) else { return String::new() };
+    let lines = buffer_text_lines(buf);
+    lines.join("\n")
 }
