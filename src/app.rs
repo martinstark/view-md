@@ -26,6 +26,8 @@ pub struct App {
     pub pixmap: Option<Pixmap>,
     pub laid: Option<LaidDoc>,
     pub painted_once: bool,
+    pub full_highlight: bool,
+    pub upgrade_pending: bool,
 }
 
 impl ApplicationHandler for App {
@@ -145,13 +147,27 @@ impl App {
 
     fn relayout(&mut self, surface_w: f32) {
         let theme = Theme::select(self.dark);
-        let laid = layout(&self.doc, surface_w, &mut self.painter.fs, &theme);
+        let laid = layout(&self.doc, surface_w, &mut self.painter.fs, &theme, self.full_highlight);
         let max = (laid.total_height - self.pixmap.as_ref().map(|p| p.height() as f32).unwrap_or(0.0)).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max);
         self.laid = Some(laid);
     }
 
+    fn current_surface_width(&self) -> f32 {
+        self.pixmap.as_ref().map(|p| p.width() as f32).unwrap_or(920.0)
+    }
+
     fn redraw(&mut self) {
+        // Apply deferred full-highlight upgrade BEFORE paint, so this frame
+        // is the one that shows colored code.
+        if self.upgrade_pending {
+            self.upgrade_pending = false;
+            self.full_highlight = true;
+            crate::trace!("relayout_full_highlight");
+            self.relayout(self.current_surface_width());
+            crate::trace!("relayout_full_highlight_done");
+        }
+
         let (Some(surface), Some(pixmap)) = (self.surface.as_mut(), self.pixmap.as_mut()) else {
             return;
         };
@@ -174,6 +190,13 @@ impl App {
         if !self.painted_once {
             crate::trace!("first_present");
             self.painted_once = true;
+            // Schedule the syntax-highlighted re-layout for the next frame.
+            if !self.full_highlight {
+                self.upgrade_pending = true;
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
         }
     }
 }

@@ -1,7 +1,8 @@
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use tiny_skia::Color as SkColor;
 
 use crate::doc::{Block, Doc, Inline, ListItem};
+use crate::highlight::{HlSpan, highlight};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
 use crate::text::{FONT_MONO, FONT_SANS};
 use crate::theme::Theme;
@@ -11,6 +12,8 @@ pub const PAD_X_MIN: f32 = 48.0;
 pub const PAD_Y: f32 = 40.0;
 pub const BODY_FS: f32 = 16.0;
 pub const BODY_LH_RATIO: f32 = 1.55;
+pub const CODE_FS: f32 = 14.0;
+pub const CODE_LH_RATIO: f32 = 1.5;
 pub const BLOCK_GAP: f32 = 16.0;
 pub const HEADING_GAP_TOP: f32 = 24.0;
 pub const LIST_INDENT: f32 = 28.0;
@@ -18,6 +21,10 @@ pub const LIST_ITEM_GAP: f32 = 4.0;
 pub const QUOTE_INDENT: f32 = 16.0;
 pub const QUOTE_BAR_W: f32 = 3.0;
 pub const TASK_BOX: f32 = 14.0;
+pub const CODE_PAD_X: f32 = 14.0;
+pub const CODE_PAD_Y: f32 = 12.0;
+pub const CODE_RADIUS: f32 = 6.0;
+pub const LANG_LABEL_FS: f32 = 11.0;
 
 pub struct LaidDoc {
     pub blocks: Vec<LaidBlock>,
@@ -40,11 +47,21 @@ pub enum LaidKind {
         color: Color,
         underlines: Vec<UnderlineRun>,
         strikes: Vec<UnderlineRun>,
+        code_runs: Vec<UnderlineRun>,
         links: Vec<LinkRange>,
     },
     Rule,
     Bar { color: SkColor, width: f32 },
     TaskBox { checked: bool, color: SkColor, fg: SkColor },
+    CodeBlock {
+        buffer: Buffer,
+        bg: SkColor,
+        width: f32,
+        pad_x: f32,
+        pad_y: f32,
+        lang_label: Option<Buffer>,
+        lang_label_color: Color,
+    },
 }
 
 #[derive(Clone)]
@@ -60,11 +77,18 @@ pub struct LinkRange {
     pub href: String,
 }
 
-pub fn layout(doc: &Doc, surface_w: f32, fs: &mut FontSystem, theme: &Theme) -> LaidDoc {
+pub fn layout(
+    doc: &Doc,
+    surface_w: f32,
+    fs: &mut FontSystem,
+    theme: &Theme,
+    full_highlight: bool,
+) -> LaidDoc {
     let content_w = (surface_w - PAD_X_MIN * 2.0).min(MAX_CONTENT_W).max(120.0);
     let content_x = ((surface_w - content_w) / 2.0).max(PAD_X_MIN);
 
-    let (mut blocks, h) = layout_blocks(&doc.blocks, content_w, content_x, fs, theme);
+    let ctx = Ctx { full_highlight };
+    let (mut blocks, h) = layout_blocks(&doc.blocks, content_w, content_x, fs, theme, &ctx);
     for b in blocks.iter_mut() {
         b.y += PAD_Y;
     }
@@ -78,12 +102,17 @@ pub fn layout(doc: &Doc, surface_w: f32, fs: &mut FontSystem, theme: &Theme) -> 
     }
 }
 
+struct Ctx {
+    full_highlight: bool,
+}
+
 fn layout_blocks(
     blocks: &[Block],
     w: f32,
     x: f32,
     fs: &mut FontSystem,
     theme: &Theme,
+    ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
     let mut y = 0.0_f32;
     let mut out: Vec<LaidBlock> = Vec::new();
@@ -96,7 +125,7 @@ fn layout_blocks(
             };
             y += gap;
         }
-        let (mut laid, dy) = layout_block(block, w, x, fs, theme);
+        let (mut laid, dy) = layout_block(block, w, x, fs, theme, ctx);
         for lb in laid.iter_mut() {
             lb.y += y;
         }
@@ -112,6 +141,7 @@ fn layout_block(
     x: f32,
     fs: &mut FontSystem,
     theme: &Theme,
+    ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
     match block {
         Block::Heading { level, inlines } => {
@@ -133,35 +163,92 @@ fn layout_block(
             vec![LaidBlock { y: 0.0, h: 1.0, x, kind: LaidKind::Rule }],
             1.0,
         ),
-        Block::CodeBlock { lang, code } => {
-            let label = if lang.is_empty() {
-                code.trim_end_matches('\n').to_string()
-            } else {
-                format!("[{}]\n{}", lang, code.trim_end_matches('\n'))
-            };
-            let buf = make_plain_buffer(fs, &label, BODY_FS - 1.0, (BODY_FS - 1.0) * 1.45, w, FONT_MONO);
-            let h = buffer_height(&buf);
-            (
-                vec![LaidBlock {
-                    y: 0.0,
-                    h,
-                    x,
-                    kind: LaidKind::Text {
-                        buffer: buf,
-                        color: theme.code_fg,
-                        underlines: Vec::new(),
-                        strikes: Vec::new(),
-                        links: Vec::new(),
-                    },
-                }],
-                h,
-            )
-        }
+        Block::CodeBlock { lang, code } => layout_code_block(lang, code, w, x, fs, theme, ctx),
         Block::List { ordered, start, items } => {
-            layout_list(*ordered, *start, items, w, x, fs, theme)
+            layout_list(*ordered, *start, items, w, x, fs, theme, ctx)
         }
-        Block::Quote(inner) => layout_quote(inner, w, x, fs, theme),
+        Block::Quote(inner) => layout_quote(inner, w, x, fs, theme, ctx),
     }
+}
+
+fn layout_code_block(
+    lang: &str,
+    code: &str,
+    w: f32,
+    x: f32,
+    fs: &mut FontSystem,
+    theme: &Theme,
+    ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+    let inner_w = (w - CODE_PAD_X * 2.0).max(80.0);
+    let spans = highlight(code.trim_end_matches('\n'), lang, theme.is_dark, ctx.full_highlight);
+    let buf = build_highlighted_buffer(fs, &spans, CODE_FS, CODE_FS * CODE_LH_RATIO, inner_w);
+    let inner_h = buffer_height(&buf);
+    let block_h = inner_h + CODE_PAD_Y * 2.0;
+    let lang_label = if !lang.is_empty() {
+        Some(make_plain_buffer(
+            fs,
+            &lang.to_uppercase(),
+            LANG_LABEL_FS,
+            LANG_LABEL_FS * 1.2,
+            120.0,
+            FONT_SANS,
+        ))
+    } else {
+        None
+    };
+    (
+        vec![LaidBlock {
+            y: 0.0,
+            h: block_h,
+            x,
+            kind: LaidKind::CodeBlock {
+                buffer: buf,
+                bg: theme.code_bg,
+                width: w,
+                pad_x: CODE_PAD_X,
+                pad_y: CODE_PAD_Y,
+                lang_label,
+                lang_label_color: theme.muted,
+            },
+        }],
+        block_h,
+    )
+}
+
+fn build_highlighted_buffer(
+    fs: &mut FontSystem,
+    spans: &[HlSpan],
+    font_size: f32,
+    line_height: f32,
+    width: f32,
+) -> Buffer {
+    let metrics = Metrics::new(font_size, line_height);
+    let mut buf = Buffer::new(fs, metrics);
+    buf.set_size(fs, Some(width), None);
+    let default_attrs = Attrs::new().family(Family::Name(FONT_MONO));
+
+    let rich: Vec<(&str, Attrs)> = spans
+        .iter()
+        .map(|s| {
+            let mut a = Attrs::new().family(Family::Name(FONT_MONO)).color(s.fg);
+            if s.bold {
+                a = a.weight(Weight::BOLD);
+            }
+            if s.italic {
+                a = a.style(Style::Italic);
+            }
+            (s.text.as_str(), a)
+        })
+        .collect();
+
+    if rich.is_empty() {
+        buf.set_text(fs, "", default_attrs, Shaping::Advanced);
+    } else {
+        buf.set_rich_text(fs, rich.into_iter(), default_attrs, Shaping::Advanced);
+    }
+    buf.shape_until_scroll(fs, false);
+    buf
 }
 
 fn layout_list(
@@ -172,6 +259,7 @@ fn layout_list(
     x: f32,
     fs: &mut FontSystem,
     theme: &Theme,
+    ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
     let item_x = x + LIST_INDENT;
     let item_w = (w - LIST_INDENT).max(80.0);
@@ -215,13 +303,14 @@ fn layout_list(
                     color: theme.muted,
                     underlines: Vec::new(),
                     strikes: Vec::new(),
+                    code_runs: Vec::new(),
                     links: Vec::new(),
                 },
             });
         }
         idx += 1;
 
-        let (mut item_laid, item_h) = layout_blocks(&item.blocks, item_w, item_x, fs, theme);
+        let (mut item_laid, item_h) = layout_blocks(&item.blocks, item_w, item_x, fs, theme, ctx);
         for lb in item_laid.iter_mut() {
             lb.y += total;
         }
@@ -237,10 +326,11 @@ fn layout_quote(
     x: f32,
     fs: &mut FontSystem,
     theme: &Theme,
+    ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
     let inner_x = x + QUOTE_INDENT;
     let inner_w = (w - QUOTE_INDENT).max(80.0);
-    let (inner_laid, inner_h) = layout_blocks(inner, inner_w, inner_x, fs, theme);
+    let (inner_laid, inner_h) = layout_blocks(inner, inner_w, inner_x, fs, theme, ctx);
     let mut all: Vec<LaidBlock> = Vec::new();
     all.push(LaidBlock {
         y: 0.0,
@@ -267,7 +357,7 @@ fn text_block(
     bold_default: bool,
 ) -> (Vec<LaidBlock>, f32) {
     let runs = build_runs(inlines, theme);
-    let (underlines, strikes, links) = compute_runs(&runs);
+    let (underlines, strikes, code_runs, links) = compute_runs(&runs);
     let buf = build_buffer(fs, &runs, color, font_size, line_height, w, bold_default);
     let h = buffer_height(&buf);
     (
@@ -280,6 +370,7 @@ fn text_block(
                 color,
                 underlines,
                 strikes,
+                code_runs,
                 links,
             },
         }],
@@ -287,10 +378,18 @@ fn text_block(
     )
 }
 
-fn compute_runs(runs: &StyledRuns) -> (Vec<UnderlineRun>, Vec<UnderlineRun>, Vec<LinkRange>) {
+fn compute_runs(
+    runs: &StyledRuns,
+) -> (
+    Vec<UnderlineRun>,
+    Vec<UnderlineRun>,
+    Vec<UnderlineRun>,
+    Vec<LinkRange>,
+) {
     let mut byte = 0usize;
     let mut underlines = Vec::new();
     let mut strikes = Vec::new();
+    let mut code_runs = Vec::new();
     let mut links: Vec<LinkRange> = Vec::new();
     for s in &runs.spans {
         let start = byte;
@@ -301,6 +400,9 @@ fn compute_runs(runs: &StyledRuns) -> (Vec<UnderlineRun>, Vec<UnderlineRun>, Vec
         if s.strike {
             strikes.push(UnderlineRun { byte_start: start, byte_end: end });
         }
+        if s.mono {
+            code_runs.push(UnderlineRun { byte_start: start, byte_end: end });
+        }
         if let Some(idx) = s.link {
             links.push(LinkRange {
                 byte_start: start,
@@ -310,7 +412,7 @@ fn compute_runs(runs: &StyledRuns) -> (Vec<UnderlineRun>, Vec<UnderlineRun>, Vec
         }
         byte = end;
     }
-    (underlines, strikes, links)
+    (underlines, strikes, code_runs, links)
 }
 
 pub fn make_plain_buffer(
