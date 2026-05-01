@@ -1,7 +1,7 @@
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use tiny_skia::Color as SkColor;
 
-use crate::doc::{Block, Doc, Inline, ListItem};
+use crate::doc::{Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
 use crate::text::{FONT_MONO, FONT_SANS};
@@ -25,6 +25,8 @@ pub const CODE_PAD_X: f32 = 14.0;
 pub const CODE_PAD_Y: f32 = 12.0;
 pub const CODE_RADIUS: f32 = 6.0;
 pub const LANG_LABEL_FS: f32 = 11.0;
+pub const TABLE_CELL_PAD_X: f32 = 12.0;
+pub const TABLE_CELL_PAD_Y: f32 = 8.0;
 
 pub struct LaidDoc {
     pub blocks: Vec<LaidBlock>,
@@ -62,6 +64,31 @@ pub enum LaidKind {
         lang_label: Option<Buffer>,
         lang_label_color: Color,
     },
+    Table {
+        block_w: f32,
+        rows: Vec<TableRowLayout>,
+        border: SkColor,
+        header_bg: SkColor,
+        alt_bg: SkColor,
+    },
+}
+
+pub struct TableRowLayout {
+    pub y_top: f32,
+    pub h: f32,
+    pub is_header: bool,
+    pub cells: Vec<TableCellLayout>,
+}
+
+pub struct TableCellLayout {
+    pub x: f32,
+    pub w: f32,
+    pub buffer: Buffer,
+    pub align: CellAlign,
+    pub color: Color,
+    pub underlines: Vec<UnderlineRun>,
+    pub strikes: Vec<UnderlineRun>,
+    pub code_runs: Vec<UnderlineRun>,
 }
 
 #[derive(Clone)]
@@ -168,7 +195,188 @@ fn layout_block(
             layout_list(*ordered, *start, items, w, x, fs, theme, ctx)
         }
         Block::Quote(inner) => layout_quote(inner, w, x, fs, theme, ctx),
+        Block::Table { aligns, head, rows } => {
+            layout_table(aligns, head, rows, w, x, fs, theme)
+        }
+        Block::Footnotes(defs) => layout_footnotes(defs, w, x, fs, theme, ctx),
     }
+}
+
+fn layout_table(
+    aligns: &[CellAlign],
+    head: &[Vec<Inline>],
+    rows: &[Vec<Vec<Inline>>],
+    w: f32,
+    x: f32,
+    fs: &mut FontSystem,
+    theme: &Theme,
+) -> (Vec<LaidBlock>, f32) {
+    let cols = head.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0)).max(1);
+    let col_w = w / cols as f32;
+    let cell_text_w = (col_w - TABLE_CELL_PAD_X * 2.0).max(40.0);
+
+    let build_row = |cells: &[Vec<Inline>],
+                     is_header: bool,
+                     fs: &mut FontSystem,
+                     theme: &Theme|
+     -> TableRowLayout {
+        let color = if is_header { theme.heading } else { theme.fg };
+        let mut row_h = 0.0_f32;
+        let mut laid_cells: Vec<TableCellLayout> = Vec::new();
+        for (i, cell) in cells.iter().enumerate() {
+            let runs = build_runs(cell, theme);
+            let (underlines, strikes, code_runs, _links) = compute_runs_no_links(&runs);
+            let buf = build_buffer(
+                fs,
+                &runs,
+                color,
+                BODY_FS - 1.0,
+                (BODY_FS - 1.0) * BODY_LH_RATIO,
+                cell_text_w,
+                is_header,
+            );
+            let h = buffer_height(&buf);
+            row_h = row_h.max(h);
+            let align = aligns.get(i).copied().unwrap_or(CellAlign::Left);
+            laid_cells.push(TableCellLayout {
+                x: i as f32 * col_w,
+                w: col_w,
+                buffer: buf,
+                align,
+                color,
+                underlines,
+                strikes,
+                code_runs,
+            });
+        }
+        TableRowLayout {
+            y_top: 0.0,
+            h: row_h + TABLE_CELL_PAD_Y * 2.0,
+            is_header,
+            cells: laid_cells,
+        }
+    };
+
+    let mut row_layouts: Vec<TableRowLayout> = Vec::new();
+    if !head.is_empty() {
+        row_layouts.push(build_row(head, true, fs, theme));
+    }
+    for r in rows {
+        row_layouts.push(build_row(r, false, fs, theme));
+    }
+
+    let mut y = 0.0_f32;
+    for r in row_layouts.iter_mut() {
+        r.y_top = y;
+        y += r.h;
+    }
+
+    (
+        vec![LaidBlock {
+            y: 0.0,
+            h: y,
+            x,
+            kind: LaidKind::Table {
+                block_w: w,
+                rows: row_layouts,
+                border: theme.border,
+                header_bg: theme.code_bg,
+                alt_bg: theme.code_bg,
+            },
+        }],
+        y,
+    )
+}
+
+fn layout_footnotes(
+    defs: &[FootnoteDef],
+    w: f32,
+    x: f32,
+    fs: &mut FontSystem,
+    theme: &Theme,
+    ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+    let mut all: Vec<LaidBlock> = Vec::new();
+    let mut total = 0.0_f32;
+
+    let header = make_plain_buffer(
+        fs,
+        "Footnotes",
+        heading_size(3),
+        heading_size(3) * 1.25,
+        w,
+        FONT_SANS,
+    );
+    let hh = buffer_height(&header);
+    all.push(LaidBlock {
+        y: 0.0,
+        h: hh,
+        x,
+        kind: LaidKind::Text {
+            buffer: header,
+            color: theme.heading,
+            underlines: Vec::new(),
+            strikes: Vec::new(),
+            code_runs: Vec::new(),
+            links: Vec::new(),
+        },
+    });
+    total += hh + BLOCK_GAP;
+    all.push(LaidBlock {
+        y: total - BLOCK_GAP * 0.5,
+        h: 1.0,
+        x,
+        kind: LaidKind::Rule,
+    });
+
+    for (i, def) in defs.iter().enumerate() {
+        if i > 0 {
+            total += LIST_ITEM_GAP * 2.0;
+        }
+        let label_buf = make_plain_buffer(
+            fs,
+            &format!("{}.", def.label),
+            BODY_FS - 1.0,
+            (BODY_FS - 1.0) * BODY_LH_RATIO,
+            32.0,
+            FONT_SANS,
+        );
+        let lh = buffer_height(&label_buf);
+        all.push(LaidBlock {
+            y: total,
+            h: lh,
+            x,
+            kind: LaidKind::Text {
+                buffer: label_buf,
+                color: theme.muted,
+                underlines: Vec::new(),
+                strikes: Vec::new(),
+                code_runs: Vec::new(),
+                links: Vec::new(),
+            },
+        });
+        let body_x = x + 32.0;
+        let body_w = (w - 32.0).max(80.0);
+        let (mut laid, dy) = layout_blocks(&def.blocks, body_w, body_x, fs, theme, ctx);
+        for lb in laid.iter_mut() {
+            lb.y += total;
+        }
+        all.extend(laid);
+        total += dy;
+    }
+
+    (all, total)
+}
+
+fn compute_runs_no_links(
+    runs: &StyledRuns,
+) -> (
+    Vec<UnderlineRun>,
+    Vec<UnderlineRun>,
+    Vec<UnderlineRun>,
+    Vec<LinkRange>,
+) {
+    compute_runs(runs)
 }
 
 fn layout_code_block(
