@@ -56,6 +56,11 @@ pub fn run(source: String, title: String) {
         painted_once: false,
         full_highlight: false,
         upgrade_pending: false,
+        help_visible: false,
+        cursor: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+        selection: None,
+        dragging: false,
+        modifiers: Default::default(),
     };
     event_loop.run_app(&mut app).expect("run_app");
 }

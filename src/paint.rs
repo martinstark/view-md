@@ -1,4 +1,4 @@
-use cosmic_text::{Buffer, Color, FontSystem, SwashCache};
+use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache};
 use tiny_skia::{
     Color as SkColor, FillRule, Path, PathBuilder, Pixmap, PremultipliedColorU8, Rect, Transform,
 };
@@ -38,6 +38,164 @@ impl Painter {
 
     pub fn paint_blank(&mut self, pixmap: &mut Pixmap, theme: &Theme) {
         pixmap.fill(theme.bg);
+    }
+
+    pub fn paint_selection(
+        &mut self,
+        pixmap: &mut Pixmap,
+        doc: &LaidDoc,
+        sel: &crate::app::Selection,
+        theme: &Theme,
+        scroll_y: f32,
+    ) {
+        let (start, end) = sel.ordered();
+        let bg = if theme.is_dark {
+            SkColor::from_rgba8(0x40, 0x60, 0x90, 0x70)
+        } else {
+            SkColor::from_rgba8(0xa0, 0xc0, 0xff, 0x80)
+        };
+
+        if start.block_idx == end.block_idx {
+            paint_block_selection(
+                pixmap,
+                &doc.blocks[start.block_idx],
+                scroll_y,
+                Some(&start.cursor),
+                Some(&end.cursor),
+                bg,
+            );
+            return;
+        }
+        paint_block_selection(
+            pixmap,
+            &doc.blocks[start.block_idx],
+            scroll_y,
+            Some(&start.cursor),
+            None,
+            bg,
+        );
+        for i in (start.block_idx + 1)..end.block_idx {
+            paint_block_selection(pixmap, &doc.blocks[i], scroll_y, None, None, bg);
+        }
+        paint_block_selection(
+            pixmap,
+            &doc.blocks[end.block_idx],
+            scroll_y,
+            None,
+            Some(&end.cursor),
+            bg,
+        );
+    }
+
+    pub fn paint_help_overlay(&mut self, pixmap: &mut Pixmap, theme: &Theme) {
+        // Dim the doc behind
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(SkColor::from_rgba8(0, 0, 0, 0x8c));
+        paint.anti_alias = false;
+        if let Some(rect) = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32) {
+            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+
+        let entries: &[(&str, &str)] = &[
+            ("q / Esc", "quit"),
+            ("t", "toggle theme"),
+            ("+ / -", "zoom in / out"),
+            ("0", "reset zoom"),
+            ("j / k", "line down / up"),
+            ("d / u", "half page down / up"),
+            ("f / b / Space", "full page down / up"),
+            ("g / G", "top / bottom"),
+            ("] / [", "next / prev heading"),
+            ("} / {", "next / prev block"),
+            ("y", "yank visible code block"),
+            ("?", "toggle this help"),
+        ];
+
+        let card_w = 420.0_f32;
+        let row_h = 22.0_f32;
+        let pad = 28.0_f32;
+        let title_h = 32.0_f32;
+        let card_h = title_h + pad + entries.len() as f32 * row_h + pad;
+
+        let cx = (pixmap.width() as f32 - card_w) / 2.0;
+        let cy = (pixmap.height() as f32 - card_h) / 2.0;
+
+        if let Some(path) = rounded_rect(cx, cy, card_w, card_h, 10.0) {
+            let mut bg = tiny_skia::Paint::default();
+            bg.set_color(if theme.is_dark {
+                SkColor::from_rgba8(0x16, 0x1b, 0x22, 0xff)
+            } else {
+                SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff)
+            });
+            bg.anti_alias = true;
+            pixmap.fill_path(&path, &bg, FillRule::Winding, Transform::identity(), None);
+
+            let mut border_paint = tiny_skia::Paint::default();
+            border_paint.set_color(theme.border);
+            border_paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+                width: 1.0,
+                ..Default::default()
+            };
+            pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
+        }
+
+        let title = crate::layout::make_plain_buffer(
+            &mut self.fs,
+            "KEYBINDS",
+            12.0,
+            14.0,
+            card_w - pad * 2.0,
+            crate::text::FONT_SANS,
+        );
+        draw_buffer(
+            pixmap,
+            &title,
+            &mut self.fs,
+            &mut self.swash,
+            cx + pad,
+            cy + pad - 6.0,
+            theme.muted,
+        );
+
+        let mut row_y = cy + pad + title_h;
+        for (key, desc) in entries {
+            let key_buf = crate::layout::make_plain_buffer(
+                &mut self.fs,
+                key,
+                13.0,
+                row_h,
+                160.0,
+                crate::text::FONT_MONO,
+            );
+            let desc_buf = crate::layout::make_plain_buffer(
+                &mut self.fs,
+                desc,
+                13.0,
+                row_h,
+                card_w - 200.0,
+                crate::text::FONT_SANS,
+            );
+            draw_buffer(
+                pixmap,
+                &key_buf,
+                &mut self.fs,
+                &mut self.swash,
+                cx + pad,
+                row_y,
+                theme.link,
+            );
+            draw_buffer(
+                pixmap,
+                &desc_buf,
+                &mut self.fs,
+                &mut self.swash,
+                cx + pad + 170.0,
+                row_y,
+                theme.fg,
+            );
+            row_y += row_h;
+        }
     }
 }
 
@@ -125,6 +283,7 @@ fn paint_block(
             pad_y,
             lang_label,
             lang_label_color,
+            source: _,
         } => {
             if let Some(path) = rounded_rect(block.x, y, *width, block.h, 6.0) {
                 let mut paint = tiny_skia::Paint::default();
@@ -357,7 +516,83 @@ fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
     }
 }
 
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+fn paint_block_selection(
+    pixmap: &mut Pixmap,
+    block: &LaidBlock,
+    scroll_y: f32,
+    start: Option<&Cursor>,
+    end: Option<&Cursor>,
+    bg: SkColor,
+) {
+    let (buffer, ox, oy) = match &block.kind {
+        LaidKind::Text { buffer, .. } => (buffer, block.x, block.y - scroll_y),
+        LaidKind::CodeBlock { buffer, pad_x, pad_y, .. } => {
+            (buffer, block.x + *pad_x, block.y - scroll_y + *pad_y)
+        }
+        _ => return,
+    };
+    let line_height = buffer.metrics().line_height;
+    let lh = line_height;
+    for run in buffer.layout_runs() {
+        let line_idx = run.line_i;
+        let after_start = start.map_or(true, |s| line_idx > s.line);
+        let before_end = end.map_or(true, |e| line_idx < e.line);
+        let on_start = start.map_or(false, |s| line_idx == s.line);
+        let on_end = end.map_or(false, |e| line_idx == e.line);
+
+        if !after_start && !on_start && !on_end {
+            continue;
+        }
+        if !before_end && !on_end && !on_start {
+            continue;
+        }
+
+        let x_start = if on_start {
+            cursor_x_in_run(&run, start.unwrap().index).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let x_end = if on_end {
+            cursor_x_in_run(&run, end.unwrap().index).unwrap_or(run.line_w)
+        } else {
+            run.line_w.max(8.0)
+        };
+        let xs = x_start.min(x_end);
+        let xe = x_start.max(x_end);
+        if xe <= xs {
+            continue;
+        }
+
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(bg);
+        paint.anti_alias = false;
+        if let Some(rect) = Rect::from_xywh(ox + xs, oy + run.line_top, xe - xs, lh) {
+            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+    }
+}
+
+fn cursor_x_in_run(run: &cosmic_text::LayoutRun, byte_idx: usize) -> Option<f32> {
+    // Walk glyphs to find the x coordinate matching a byte offset within the run.
+    if run.glyphs.is_empty() {
+        return Some(0.0);
+    }
+    for g in run.glyphs.iter() {
+        if byte_idx <= g.start {
+            return Some(g.x);
+        }
+        if byte_idx <= g.end {
+            // Mid-glyph: approximate by interpolation
+            let span = (g.end - g.start).max(1);
+            let frac = (byte_idx - g.start) as f32 / span as f32;
+            return Some(g.x + g.w * frac);
+        }
+    }
+    let last = run.glyphs.last().unwrap();
+    Some(last.x + last.w)
+}
+
+pub(crate) fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
     let mut pb = PathBuilder::new();
     pb.move_to(x + r, y);
