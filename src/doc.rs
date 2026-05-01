@@ -1,8 +1,25 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 #[derive(Debug)]
 pub struct Doc {
     pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CellAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl From<Alignment> for CellAlign {
+    fn from(a: Alignment) -> Self {
+        match a {
+            Alignment::Right => CellAlign::Right,
+            Alignment::Center => CellAlign::Center,
+            _ => CellAlign::Left,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -13,6 +30,18 @@ pub enum Block {
     Quote(Vec<Block>),
     CodeBlock { lang: String, code: String },
     Rule,
+    Table {
+        aligns: Vec<CellAlign>,
+        head: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
+    Footnotes(Vec<FootnoteDef>),
+}
+
+#[derive(Debug)]
+pub struct FootnoteDef {
+    pub label: String,
+    pub blocks: Vec<Block>,
 }
 
 #[derive(Debug)]
@@ -30,6 +59,7 @@ pub enum Inline {
     Strike(Vec<Inline>),
     Link { href: String, kids: Vec<Inline> },
     Image { src: String, alt: String },
+    FootnoteRef(String),
     SoftBreak,
     HardBreak,
 }
@@ -50,9 +80,20 @@ pub fn parse(md: &str) -> Doc {
 }
 
 #[derive(Default)]
+struct PendingTable {
+    aligns: Vec<CellAlign>,
+    head: Vec<Vec<Inline>>,
+    rows: Vec<Vec<Vec<Inline>>>,
+    in_head: bool,
+    current_row: Option<Vec<Vec<Inline>>>,
+}
+
+#[derive(Default)]
 struct Builder {
     stack: Vec<Frame>,
     blocks: Vec<Block>,
+    footnotes: Vec<FootnoteDef>,
+    table: Option<PendingTable>,
 }
 
 enum Frame {
@@ -67,6 +108,8 @@ enum Frame {
     List { ordered: bool, start: u64, items: Vec<ListItem> },
     Item { task: Option<bool>, blocks: Vec<Block> },
     CodeBlock { lang: String, code: String },
+    TableCell(Vec<Inline>),
+    FootnoteDef { label: String, blocks: Vec<Block> },
 }
 
 impl Builder {
@@ -85,7 +128,9 @@ impl Builder {
                 }
             }
             Event::Html(_) | Event::InlineHtml(_) => {}
-            Event::FootnoteReference(_) => {}
+            Event::FootnoteReference(label) => {
+                self.push_inline(Inline::FootnoteRef(label.into_string()));
+            }
             _ => {}
         }
     }
@@ -125,6 +170,31 @@ impl Builder {
                 src: dest_url.into_string(),
                 alt: String::new(),
             }),
+            Tag::Table(aligns) => {
+                self.table = Some(PendingTable {
+                    aligns: aligns.into_iter().map(CellAlign::from).collect(),
+                    ..Default::default()
+                });
+            }
+            Tag::TableHead => {
+                if let Some(t) = self.table.as_mut() {
+                    t.in_head = true;
+                }
+            }
+            Tag::TableRow => {
+                if let Some(t) = self.table.as_mut() {
+                    t.current_row = Some(Vec::new());
+                }
+            }
+            Tag::TableCell => {
+                self.stack.push(Frame::TableCell(Vec::new()));
+            }
+            Tag::FootnoteDefinition(label) => {
+                self.stack.push(Frame::FootnoteDef {
+                    label: label.into_string(),
+                    blocks: Vec::new(),
+                });
+            }
             _ => {}
         }
     }
@@ -188,6 +258,47 @@ impl Builder {
                     self.push_inline(Inline::Image { src, alt });
                 }
             }
+            TagEnd::Table => {
+                if let Some(t) = self.table.take() {
+                    self.push_block(Block::Table {
+                        aligns: t.aligns,
+                        head: t.head,
+                        rows: t.rows,
+                    });
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(t) = self.table.as_mut() {
+                    t.in_head = false;
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(t) = self.table.as_mut() {
+                    if let Some(row) = t.current_row.take() {
+                        if t.in_head {
+                            t.head = row;
+                        } else {
+                            t.rows.push(row);
+                        }
+                    }
+                }
+            }
+            TagEnd::TableCell => {
+                if let Some(Frame::TableCell(inlines)) = self.stack.pop() {
+                    if let Some(t) = self.table.as_mut() {
+                        if let Some(row) = t.current_row.as_mut() {
+                            row.push(inlines);
+                        } else if t.in_head {
+                            t.head.push(inlines);
+                        }
+                    }
+                }
+            }
+            TagEnd::FootnoteDefinition => {
+                if let Some(Frame::FootnoteDef { label, blocks }) = self.stack.pop() {
+                    self.footnotes.push(FootnoteDef { label, blocks });
+                }
+            }
             _ => {}
         }
     }
@@ -207,19 +318,25 @@ impl Builder {
             | Some(Frame::Strong(v))
             | Some(Frame::Em(v))
             | Some(Frame::Strike(v))
-            | Some(Frame::Link { kids: v, .. }) => v.push(inline),
+            | Some(Frame::Link { kids: v, .. })
+            | Some(Frame::TableCell(v)) => v.push(inline),
             _ => {}
         }
     }
 
     fn push_block(&mut self, block: Block) {
         match self.stack.last_mut() {
-            Some(Frame::Quote(blocks)) | Some(Frame::Item { blocks, .. }) => blocks.push(block),
+            Some(Frame::Quote(blocks))
+            | Some(Frame::Item { blocks, .. })
+            | Some(Frame::FootnoteDef { blocks, .. }) => blocks.push(block),
             _ => self.blocks.push(block),
         }
     }
 
-    fn finish(self) -> Vec<Block> {
+    fn finish(mut self) -> Vec<Block> {
+        if !self.footnotes.is_empty() {
+            self.blocks.push(Block::Footnotes(self.footnotes));
+        }
         self.blocks
     }
 }
@@ -257,6 +374,11 @@ fn flatten_into(i: &Inline, out: &mut String) {
             }
         }
         Inline::Image { alt, .. } => out.push_str(alt),
+        Inline::FootnoteRef(label) => {
+            out.push('[');
+            out.push_str(label);
+            out.push(']');
+        }
         Inline::SoftBreak => out.push(' '),
         Inline::HardBreak => out.push('\n'),
     }

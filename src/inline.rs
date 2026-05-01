@@ -95,6 +95,11 @@ fn walk(inlines: &[Inline], state: StyleState, theme: &Theme, out: &mut StyledRu
                 s2.color = Some(theme.muted);
                 push(out, format!("[{}]", alt), s2);
             }
+            Inline::FootnoteRef(label) => {
+                let mut s2 = state;
+                s2.color = Some(theme.link);
+                push(out, format!("[{}]", label), s2);
+            }
             Inline::SoftBreak => push(out, " ".into(), state),
             Inline::HardBreak => push(out, "\n".into(), state),
         }

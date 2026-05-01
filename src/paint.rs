@@ -3,7 +3,8 @@ use tiny_skia::{
     Color as SkColor, FillRule, Path, PathBuilder, Pixmap, PremultipliedColorU8, Rect, Transform,
 };
 
-use crate::layout::{LaidBlock, LaidDoc, LaidKind, UnderlineRun};
+use crate::doc::CellAlign;
+use crate::layout::{LaidBlock, LaidDoc, LaidKind, TableCellLayout, TableRowLayout, UnderlineRun};
 use crate::theme::Theme;
 
 pub struct Painter {
@@ -150,6 +151,120 @@ fn paint_block(
                 cosmic_text::Color::rgb(0xe6, 0xed, 0xf3),
             );
         }
+        LaidKind::Table {
+            block_w,
+            rows,
+            border,
+            header_bg,
+            alt_bg: _,
+        } => paint_table(pixmap, fs, swash, block.x, y, *block_w, rows, *border, *header_bg, theme),
+    }
+}
+
+fn paint_table(
+    pixmap: &mut Pixmap,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    x0: f32,
+    y0: f32,
+    block_w: f32,
+    rows: &[TableRowLayout],
+    border: SkColor,
+    header_bg: SkColor,
+    theme: &Theme,
+) {
+    let total_h = rows.last().map(|r| r.y_top + r.h).unwrap_or(0.0);
+
+    // Header background
+    if let Some(first) = rows.first() {
+        if first.is_header {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(header_bg);
+            paint.anti_alias = false;
+            if let Some(rect) = Rect::from_xywh(x0, y0, block_w, first.h) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+        }
+    }
+
+    // Outer border + horizontal lines
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(border);
+    paint.anti_alias = false;
+
+    // top
+    if let Some(rect) = Rect::from_xywh(x0, y0, block_w, 1.0) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    // bottom
+    if let Some(rect) = Rect::from_xywh(x0, y0 + total_h - 1.0, block_w, 1.0) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    // between rows
+    for r in rows.iter().skip(1) {
+        if let Some(rect) = Rect::from_xywh(x0, y0 + r.y_top, block_w, 1.0) {
+            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+    }
+    // left + right
+    if let Some(rect) = Rect::from_xywh(x0, y0, 1.0, total_h) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    if let Some(rect) = Rect::from_xywh(x0 + block_w - 1.0, y0, 1.0, total_h) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    // vertical column lines
+    if let Some(first) = rows.first() {
+        for cell in first.cells.iter().skip(1) {
+            if let Some(rect) = Rect::from_xywh(x0 + cell.x, y0, 1.0, total_h) {
+                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+            }
+        }
+    }
+
+    // Cell content
+    for r in rows.iter() {
+        for c in r.cells.iter() {
+            paint_table_cell(pixmap, fs, swash, x0, y0 + r.y_top, c, theme);
+        }
+    }
+}
+
+fn paint_table_cell(
+    pixmap: &mut Pixmap,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    table_x0: f32,
+    row_y0: f32,
+    cell: &TableCellLayout,
+    theme: &Theme,
+) {
+    let pad_x = crate::layout::TABLE_CELL_PAD_X;
+    let pad_y = crate::layout::TABLE_CELL_PAD_Y;
+
+    let cell_text_w = (cell.w - pad_x * 2.0).max(0.0);
+    let actual_text_w = cell.buffer
+        .layout_runs()
+        .map(|r| r.line_w)
+        .fold(0.0_f32, f32::max);
+    let extra = (cell_text_w - actual_text_w).max(0.0);
+    let dx = match cell.align {
+        CellAlign::Left => 0.0,
+        CellAlign::Center => extra / 2.0,
+        CellAlign::Right => extra,
+    };
+    let cx = table_x0 + cell.x + pad_x + dx;
+    let cy = row_y0 + pad_y;
+
+    for c in &cell.code_runs {
+        draw_run_pills(pixmap, &cell.buffer, cx, cy, c, theme.inline_code_bg);
+    }
+    draw_buffer(pixmap, &cell.buffer, fs, swash, cx, cy, cell.color);
+    for u in &cell.underlines {
+        draw_run_lines(pixmap, &cell.buffer, cx, cy, u, cell.color, LinePos::Underline);
+    }
+    for s in &cell.strikes {
+        draw_run_lines(pixmap, &cell.buffer, cx, cy, s, cell.color, LinePos::Strike);
     }
 }
 
