@@ -1,0 +1,28 @@
+[package]
+name = "mdv"
+version = "0.2.0"
+description = "Minimal native markdown viewer"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "mdv"
+path = "src/main.rs"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+tiny-skia = "0.11"
+cosmic-text = "0.12"
+fontdb = "0.21"
+pulldown-cmark = { version = "0.13", default-features = false }
+syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
+arboard = "3"
+opener = "0.7"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
