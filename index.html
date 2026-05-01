@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mdv</title>
+    <style>
+      html { margin: 0; background: #0d1117; }
+      html[data-theme="light"] { background: #ffffff; }
+      body { margin: 0; background: inherit; }
+    </style>
+    <link id="gh-light" rel="stylesheet" href="/gh-light.css" />
+    <link id="gh-dark" rel="stylesheet" href="/gh-dark.css" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <style id="syntect-light"></style>
+    <style id="syntect-dark"></style>
+    <script>
+      (function () {
+        var s = localStorage.getItem("theme");
+        if (!s) s = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = s;
+        var off = document.getElementById("gh-" + (s === "dark" ? "light" : "dark"));
+        if (off) off.media = "not all";
+      })();
+    </script>
+  </head>
+  <body>
+    <main><article class="markdown-body" id="content"></article></main>
+    <div id="help" hidden>
+      <div class="help-card">
+        <h2>keybinds</h2>
+        <table>
+          <tr><td>q</td><td>quit</td></tr>
+          <tr><td>t</td><td>toggle theme</td></tr>
+          <tr><td>+ / -</td><td>zoom in / out</td></tr>
+          <tr><td>0</td><td>reset zoom</td></tr>
+          <tr><td>j / k</td><td>line down / up</td></tr>
+          <tr><td>d / u</td><td>half page down / up</td></tr>
+          <tr><td>f / b</td><td>full page down / up</td></tr>
+          <tr><td>g / G</td><td>top / bottom</td></tr>
+          <tr><td>] / [</td><td>next / prev heading</td></tr>
+          <tr><td>&#125; / &#123;</td><td>next / prev block</td></tr>
+          <tr><td>?</td><td>toggle this help</td></tr>
+          <tr><td>esc</td><td>close help</td></tr>
+        </table>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

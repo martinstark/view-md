@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=mdv
+Comment=Minimal markdown viewer
+Exec=mdv %f
+MimeType=text/markdown;
+NoDisplay=true
+Terminal=false
+Categories=Utility;
