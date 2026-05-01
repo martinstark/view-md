@@ -113,14 +113,15 @@ pub fn layout(
     fs: &mut FontSystem,
     theme: &Theme,
     full_highlight: bool,
-    zoom: f32,
+    scale: f32,
 ) -> LaidDoc {
-    let content_w = (surface_w - PAD_X_MIN * 2.0).min(MAX_CONTENT_W * zoom).max(120.0);
-    let content_x = ((surface_w - content_w) / 2.0).max(PAD_X_MIN);
+    let pad_x = PAD_X_MIN * scale;
+    let pad_y = PAD_Y * scale;
+    let content_w = (surface_w - pad_x * 2.0).min(MAX_CONTENT_W * scale).max(120.0);
+    let content_x = ((surface_w - content_w) / 2.0).max(pad_x);
 
-    let ctx = Ctx { full_highlight, zoom };
+    let ctx = Ctx { full_highlight, scale };
 
-    // Track heading/block y-positions before children are laid out.
     let mut heading_ys = Vec::new();
     let mut block_ys = Vec::new();
 
@@ -129,15 +130,15 @@ pub fn layout(
     for (i, block) in doc.blocks.iter().enumerate() {
         if i > 0 {
             let gap = if matches!(block, Block::Heading { .. }) {
-                HEADING_GAP_TOP * zoom
+                HEADING_GAP_TOP * scale
             } else {
-                BLOCK_GAP * zoom
+                BLOCK_GAP * scale
             };
             y += gap;
         }
-        block_ys.push(y + PAD_Y);
+        block_ys.push(y + pad_y);
         if matches!(block, Block::Heading { .. }) {
-            heading_ys.push(y + PAD_Y);
+            heading_ys.push(y + pad_y);
         }
         let (mut laid, dy) = layout_block(block, content_w, content_x, fs, theme, &ctx);
         for lb in laid.iter_mut() {
@@ -147,12 +148,12 @@ pub fn layout(
         y += dy;
     }
     for b in blocks.iter_mut() {
-        b.y += PAD_Y;
+        b.y += pad_y;
     }
 
     LaidDoc {
         blocks,
-        total_height: y + PAD_Y * 2.0,
+        total_height: y + pad_y * 2.0,
         width: surface_w,
         content_x,
         content_w,
@@ -163,7 +164,7 @@ pub fn layout(
 
 struct Ctx {
     full_highlight: bool,
-    zoom: f32,
+    scale: f32,
 }
 
 fn layout_blocks(
@@ -179,9 +180,9 @@ fn layout_blocks(
     for (i, block) in blocks.iter().enumerate() {
         if i > 0 {
             let gap = if matches!(block, Block::Heading { .. }) {
-                HEADING_GAP_TOP
+                HEADING_GAP_TOP * ctx.scale
             } else {
-                BLOCK_GAP
+                BLOCK_GAP * ctx.scale
             };
             y += gap;
         }
@@ -203,7 +204,7 @@ fn layout_block(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
-    let z = ctx.zoom;
+    let z = ctx.scale;
     match block {
         Block::Heading { level, inlines } => {
             let size = heading_size(*level) * z;
@@ -230,7 +231,7 @@ fn layout_block(
         }
         Block::Quote(inner) => layout_quote(inner, w, x, fs, theme, ctx),
         Block::Table { aligns, head, rows } => {
-            layout_table(aligns, head, rows, w, x, fs, theme)
+            layout_table(aligns, head, rows, w, x, fs, theme, ctx)
         }
         Block::Footnotes(defs) => layout_footnotes(defs, w, x, fs, theme, ctx),
     }
@@ -244,10 +245,15 @@ fn layout_table(
     x: f32,
     fs: &mut FontSystem,
     theme: &Theme,
+    ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
+    let s = ctx.scale;
+    let pad_x = TABLE_CELL_PAD_X * s;
+    let pad_y = TABLE_CELL_PAD_Y * s;
     let cols = head.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0)).max(1);
     let col_w = w / cols as f32;
-    let cell_text_w = (col_w - TABLE_CELL_PAD_X * 2.0).max(40.0);
+    let cell_text_w = (col_w - pad_x * 2.0).max(40.0);
+    let cell_fs = (BODY_FS - 1.0) * s;
 
     let build_row = |cells: &[Vec<Inline>],
                      is_header: bool,
@@ -259,13 +265,13 @@ fn layout_table(
         let mut laid_cells: Vec<TableCellLayout> = Vec::new();
         for (i, cell) in cells.iter().enumerate() {
             let runs = build_runs(cell, theme);
-            let (underlines, strikes, code_runs, _links) = compute_runs_no_links(&runs);
+            let (underlines, strikes, code_runs, _links) = compute_runs(&runs);
             let buf = build_buffer(
                 fs,
                 &runs,
                 color,
-                BODY_FS - 1.0,
-                (BODY_FS - 1.0) * BODY_LH_RATIO,
+                cell_fs,
+                cell_fs * BODY_LH_RATIO,
                 cell_text_w,
                 is_header,
             );
@@ -285,7 +291,7 @@ fn layout_table(
         }
         TableRowLayout {
             y_top: 0.0,
-            h: row_h + TABLE_CELL_PAD_Y * 2.0,
+            h: row_h + pad_y * 2.0,
             is_header,
             cells: laid_cells,
         }
@@ -402,16 +408,6 @@ fn layout_footnotes(
     (all, total)
 }
 
-fn compute_runs_no_links(
-    runs: &StyledRuns,
-) -> (
-    Vec<UnderlineRun>,
-    Vec<UnderlineRun>,
-    Vec<UnderlineRun>,
-    Vec<LinkRange>,
-) {
-    compute_runs(runs)
-}
 
 fn layout_code_block(
     lang: &str,
@@ -422,19 +418,21 @@ fn layout_code_block(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
-    let z = ctx.zoom;
-    let inner_w = (w - CODE_PAD_X * 2.0).max(80.0);
+    let s = ctx.scale;
+    let pad_x = CODE_PAD_X * s;
+    let pad_y = CODE_PAD_Y * s;
+    let inner_w = (w - pad_x * 2.0).max(80.0);
     let spans = highlight(code.trim_end_matches('\n'), lang, theme.is_dark, ctx.full_highlight);
-    let buf = build_highlighted_buffer(fs, &spans, CODE_FS * z, CODE_FS * z * CODE_LH_RATIO, inner_w);
+    let buf = build_highlighted_buffer(fs, &spans, CODE_FS * s, CODE_FS * s * CODE_LH_RATIO, inner_w);
     let inner_h = buffer_height(&buf);
-    let block_h = inner_h + CODE_PAD_Y * 2.0;
+    let block_h = inner_h + pad_y * 2.0;
     let lang_label = if !lang.is_empty() {
         Some(make_plain_buffer(
             fs,
             &lang.to_uppercase(),
-            LANG_LABEL_FS,
-            LANG_LABEL_FS * 1.2,
-            120.0,
+            LANG_LABEL_FS * s,
+            LANG_LABEL_FS * s * 1.2,
+            120.0 * s,
             FONT_SANS,
         ))
     } else {
@@ -449,8 +447,8 @@ fn layout_code_block(
                 buffer: buf,
                 bg: theme.code_bg,
                 width: w,
-                pad_x: CODE_PAD_X,
-                pad_y: CODE_PAD_Y,
+                pad_x,
+                pad_y,
                 lang_label,
                 lang_label_color: theme.muted,
                 source: code.trim_end_matches('\n').to_string(),
@@ -505,22 +503,25 @@ fn layout_list(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
-    let item_x = x + LIST_INDENT;
-    let item_w = (w - LIST_INDENT).max(80.0);
+    let s = ctx.scale;
+    let indent = LIST_INDENT * s;
+    let task_box = TASK_BOX * s;
+    let item_x = x + indent;
+    let item_w = (w - indent).max(80.0);
     let mut all: Vec<LaidBlock> = Vec::new();
     let mut total = 0.0_f32;
     let mut idx = start;
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
-            total += LIST_ITEM_GAP;
+            total += LIST_ITEM_GAP * s;
         }
 
         if let Some(checked) = item.task {
-            let baseline_offset = ((BODY_FS * BODY_LH_RATIO) - TASK_BOX) / 2.0;
+            let baseline_offset = ((BODY_FS * s * BODY_LH_RATIO) - task_box) / 2.0;
             all.push(LaidBlock {
                 y: total + baseline_offset,
-                h: TASK_BOX,
-                x: x + LIST_INDENT - TASK_BOX - 6.0,
+                h: task_box,
+                x: x + indent - task_box - 6.0 * s,
                 kind: LaidKind::TaskBox {
                     checked,
                     color: theme.border,
@@ -532,9 +533,9 @@ fn layout_list(
             let buf = make_plain_buffer(
                 fs,
                 &marker,
-                BODY_FS,
-                BODY_FS * BODY_LH_RATIO,
-                LIST_INDENT,
+                BODY_FS * s,
+                BODY_FS * s * BODY_LH_RATIO,
+                indent,
                 FONT_SANS,
             );
             let mh = buffer_height(&buf);
@@ -572,8 +573,10 @@ fn layout_quote(
     theme: &Theme,
     ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
-    let inner_x = x + QUOTE_INDENT;
-    let inner_w = (w - QUOTE_INDENT).max(80.0);
+    let s = ctx.scale;
+    let indent = QUOTE_INDENT * s;
+    let inner_x = x + indent;
+    let inner_w = (w - indent).max(80.0);
     let (inner_laid, inner_h) = layout_blocks(inner, inner_w, inner_x, fs, theme, ctx);
     let mut all: Vec<LaidBlock> = Vec::new();
     all.push(LaidBlock {
@@ -582,7 +585,7 @@ fn layout_quote(
         x,
         kind: LaidKind::Bar {
             color: theme.quote_bar,
-            width: QUOTE_BAR_W,
+            width: QUOTE_BAR_W * s,
         },
     });
     all.extend(inner_laid);

@@ -46,6 +46,7 @@ pub struct App {
     pub selection: Option<Selection>,
     pub dragging: bool,
     pub modifiers: Modifiers,
+    pub dpi_scale: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,6 +100,7 @@ impl ApplicationHandler for App {
         let window = Rc::new(event_loop.create_window(attrs).expect("window create"));
         crate::trace!("window_created");
 
+        self.dpi_scale = window.scale_factor() as f32;
         let context = Context::new(window.clone()).expect("softbuffer context");
         let mut surface = Surface::new(&context, window.clone()).expect("softbuffer surface");
         let size = window.inner_size();
@@ -135,6 +137,11 @@ impl ApplicationHandler for App {
                     self.relayout(w as f32);
                     self.request_redraw();
                 }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.dpi_scale = scale_factor as f32;
+                self.relayout(self.current_surface_width());
+                self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -358,13 +365,14 @@ impl App {
 
     fn relayout(&mut self, surface_w: f32) {
         let theme = Theme::select(self.dark);
+        let scale = self.zoom * self.dpi_scale.max(1.0);
         let laid = layout(
             &self.doc,
             surface_w,
             &mut self.painter.fs,
             &theme,
             self.full_highlight,
-            self.zoom,
+            scale,
         );
         let max = (laid.total_height - self.viewport_h()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max);

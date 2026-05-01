@@ -61,6 +61,7 @@ pub fn run(source: String, title: String) {
         selection: None,
         dragging: false,
         modifiers: Default::default(),
+        dpi_scale: 1.0,
     };
     event_loop.run_app(&mut app).expect("run_app");
 }

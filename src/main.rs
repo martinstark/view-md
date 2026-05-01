@@ -5,7 +5,26 @@ use std::process::ExitCode;
 use mdv::trace;
 
 fn usage() -> ! {
-    eprintln!("usage: mdv [--licenses|--trace] <file.md|->");
+    eprintln!(
+        "mdv — minimal native markdown viewer\n\
+         \n\
+         usage: mdv [flags] <file.md | ->\n\
+         \n\
+         flags:\n\
+         \x20\x20--licenses     print bundled font licenses (SIL OFL 1.1)\n\
+         \x20\x20--trace        print timing breakdown (also: MDV_TRACE=1)\n\
+         \x20\x20-h, --help     this message\n\
+         \n\
+         keybinds (press ? in the app for the full list):\n\
+         \x20\x20q / Esc        quit\n\
+         \x20\x20t              toggle theme\n\
+         \x20\x20j k d u f b    scroll line / half / full page\n\
+         \x20\x20g G            top / bottom\n\
+         \x20\x20] [ }} {{      next/prev heading / block\n\
+         \x20\x20+ - 0          zoom in / out / reset\n\
+         \x20\x20y              yank visible code block\n\
+         \x20\x20Ctrl+C         copy selected text"
+    );
     std::process::exit(2);
 }
 
