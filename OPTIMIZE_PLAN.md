@@ -57,14 +57,35 @@ Measured (n=20 each, fully_rendered = max(first_present, relayout_done)):
 README never runs the upgrade pass; test.md still runs it but on code
 blocks only.
 
-### 2. Parallelize per-block shaping during layout
-**Saves 3–5ms on frame 1.**
+### 2. Parallelize per-block shaping during layout ✅ DONE
+**Saves 3–5ms on layout, 5–8ms total wall-clock on frame 1.**
 
-`layout()` walks blocks sequentially through `&mut FontSystem`. cosmic-text
-Buffers are independent. Build N worker `FontSystem`s from a shared
-`Arc<fontdb::Database>` (the db is the heavy part — `FontSystem` itself is
-cheap), shape blocks in parallel via rayon or hand-rolled threads, collect.
-With ~16 cores and ~50 blocks, layout drops from ~5ms toward ~1ms.
+`layout()` walked blocks sequentially through one `&mut FontSystem`. The
+new `layout_parallel` round-robin partitions top-level blocks across
+`1 + N_LAYOUT_WORKERS` lanes (caller thread + worker threads, each with
+its own FontSystem). cosmic-text Buffers are independent per block; std
+`thread::scope` lets workers borrow their FontSystem mutably without
+heap-allocated handles.
+
+Cross-thread font-id compatibility: each FontSystem is built from
+identical font data in identical order, and fontdb stores faces in a
+`slotmap` whose keys are deterministic for fresh maps — so a Buffer
+shaped on a worker can be painted using the painter's FontSystem
+because cache_key.font_id matches.
+
+Worker FontSystems are built on a background thread (~1ms) parallel to
+parse + event-loop init, so the cost is off the critical path.
+
+Tunable: `N_LAYOUT_WORKERS` in `lib.rs` (default 2). Bumping trades
+~3MB/worker memory for more parallelism on bigger docs.
+
+Measured (n=20 each):
+
+| doc | baseline | after (1+1b) | after (1+1b+2) |
+|---|---:|---:|---:|
+| README.md | 37.40ms | 32.5–33.9ms | **28.5–29.8ms (−7.6 to −8.9ms, −20–24%)** |
+| examples/test.md | 51.86ms | 50.2–51.2ms | **45.7–46.4ms (−5.4 to −6.1ms, −10–12%)** |
+| NATIVE_MD_VIEW.md (559 lines) | not measured | not measured | 48.62ms |
 
 ### 3. Avoid the 2.8MB font memcpy at startup
 **Saves ~0.3ms.**

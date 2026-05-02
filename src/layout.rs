@@ -121,6 +121,25 @@ pub fn layout(
   full_highlight: bool,
   scale: f32,
 ) -> LaidDoc {
+  layout_parallel(doc, surface_w, fs, &mut [], theme, full_highlight, scale)
+}
+
+/// Parallel variant: top-level blocks are partitioned round-robin across
+/// `1 + worker_fs.len()` lanes (lane 0 = caller's thread using `main_fs`,
+/// lanes 1..N = scoped threads each using one of `worker_fs`). cosmic-text
+/// shaping is independent per block and the per-lane font_id assignments
+/// match the painter's because all FontSystems load identical fonts in
+/// identical order (fontdb's slotmap is deterministic for fresh maps).
+/// Sub-block y-offsets are assembled sequentially after join.
+pub fn layout_parallel(
+  doc: &Doc,
+  surface_w: f32,
+  main_fs: &mut FontSystem,
+  worker_fs: &mut [FontSystem],
+  theme: &Theme,
+  full_highlight: bool,
+  scale: f32,
+) -> LaidDoc {
   let pad_x = PAD_X_MIN * scale;
   let pad_y = PAD_Y * scale;
   let content_w = (surface_w - pad_x * 2.0)
@@ -133,14 +152,62 @@ pub fn layout(
     scale,
   };
 
+  let n_lanes = 1 + worker_fs.len();
+  let n_blocks = doc.blocks.len();
+  let mut by_idx: Vec<Option<(Vec<LaidBlock>, f32)>> = (0..n_blocks).map(|_| None).collect();
+
+  // Round-robin partition: block i goes to lane (i % n_lanes). Lane 0 is
+  // the caller; lanes 1.. are workers. Round-robin keeps cost balanced
+  // when block costs vary (a code block is ~10x a heading).
+  let mut lane_indices: Vec<Vec<usize>> = vec![Vec::new(); n_lanes];
+  for i in 0..n_blocks {
+    lane_indices[i % n_lanes].push(i);
+  }
+  let main_indices = std::mem::take(&mut lane_indices[0]);
+  let worker_indices: Vec<Vec<usize>> = lane_indices.drain(1..).collect();
+
+  std::thread::scope(|s| {
+    let handles: Vec<_> = worker_fs
+      .iter_mut()
+      .zip(worker_indices.into_iter())
+      .map(|(fs, indices)| {
+        let blocks = &doc.blocks;
+        let theme = theme;
+        let ctx = &ctx;
+        s.spawn(move || -> Vec<(usize, Vec<LaidBlock>, f32)> {
+          indices
+            .into_iter()
+            .map(|i| {
+              let (laid, h) = layout_block(&blocks[i], content_w, content_x, fs, theme, ctx);
+              (i, laid, h)
+            })
+            .collect()
+        })
+      })
+      .collect();
+
+    // Caller thread does its lane while workers run.
+    for i in main_indices {
+      let (laid, h) = layout_block(&doc.blocks[i], content_w, content_x, main_fs, theme, &ctx);
+      by_idx[i] = Some((laid, h));
+    }
+
+    for handle in handles {
+      let lane_results = handle.join().expect("layout worker panicked");
+      for (i, laid, h) in lane_results {
+        by_idx[i] = Some((laid, h));
+      }
+    }
+  });
+
   let mut heading_ys = Vec::new();
   let mut block_ys = Vec::new();
-
   let mut y = 0.0_f32;
   let mut blocks: Vec<LaidBlock> = Vec::new();
-  for (i, block) in doc.blocks.iter().enumerate() {
+  for (i, slot) in by_idx.into_iter().enumerate() {
+    let (mut sub_blocks, sub_h) = slot.expect("missing layout result");
     if i > 0 {
-      let gap = if matches!(block, Block::Heading { .. }) {
+      let gap = if matches!(doc.blocks[i], Block::Heading { .. }) {
         HEADING_GAP_TOP * scale
       } else {
         BLOCK_GAP * scale
@@ -148,15 +215,14 @@ pub fn layout(
       y += gap;
     }
     block_ys.push(y + pad_y);
-    if matches!(block, Block::Heading { .. }) {
+    if matches!(doc.blocks[i], Block::Heading { .. }) {
       heading_ys.push(y + pad_y);
     }
-    let (mut laid, dy) = layout_block(block, content_w, content_x, fs, theme, &ctx);
-    for lb in laid.iter_mut() {
+    for lb in sub_blocks.iter_mut() {
       lb.y += y;
     }
-    blocks.extend(laid);
-    y += dy;
+    blocks.extend(sub_blocks);
+    y += sub_h;
   }
   for b in blocks.iter_mut() {
     b.y += pad_y;

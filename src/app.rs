@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cosmic_text::Cursor;
+use cosmic_text::{Cursor, FontSystem};
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
 use tiny_skia::Pixmap;
@@ -15,7 +15,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::doc::Doc;
-use crate::layout::{LaidDoc, LaidKind, layout};
+use crate::layout::{LaidDoc, LaidKind, layout_parallel};
 use crate::paint::{Painter, pixmap_to_softbuffer};
 use crate::state::{self, Prefs};
 use crate::theme::Theme;
@@ -39,6 +39,11 @@ pub struct App {
   pub title: String,
   pub doc: Doc,
   pub painter: Painter,
+  /// Extra FontSystems used for parallel block shaping in
+  /// `layout_parallel`. Each is a private clone of the painter's font
+  /// data — see `text::build_font_system` for the canonical setup. The
+  /// painter still owns the FontSystem used at paint time.
+  pub layout_workers: Vec<FontSystem>,
   pub dark: bool,
   pub zoom: f32,
   pub scroll_y: f32,
@@ -409,10 +414,11 @@ impl App {
     }
     let theme = Theme::select(self.dark);
     let scale = self.zoom * self.dpi_scale.max(1.0);
-    let laid = layout(
+    let laid = layout_parallel(
       &self.doc,
       surface_w,
       &mut self.painter.fs,
+      &mut self.layout_workers,
       &theme,
       self.full_highlight,
       scale,
