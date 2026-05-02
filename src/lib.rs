@@ -18,22 +18,12 @@ use crate::paint::Painter;
 pub fn run(source: String, title: String) {
     crate::trace!("run_start");
 
-    // Warm syntect off the critical path. SyntaxSet::load_defaults_newlines
-    // unpacks ~38ms of bincode; we want it ready by the time layout hits a
-    // code block, but not blocking window creation.
-    std::thread::spawn(|| {
-        crate::trace!("syntect_warm_start");
-        let _ = crate::highlight::syntaxes();
-        crate::trace!("syntect_syntaxes_ready");
-        let _ = crate::highlight::themes();
-        crate::trace!("syntect_themes_ready");
-    });
-
     let fs = crate::text::build_font_system();
     crate::trace!("fontsystem_ready");
 
     let doc = crate::doc::parse(&source);
     crate::trace!("doc_parsed");
+
 
     let event_loop = EventLoop::new().expect("event loop");
     crate::trace!("event_loop_created");
@@ -41,6 +31,28 @@ pub fn run(source: String, title: String) {
     let prefs = crate::state::load();
     let dark = prefs.theme.unwrap_or_else(detect_dark);
     let zoom = prefs.zoom.unwrap_or(1.0).clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
+
+    // Now that the active theme is known, kick the syntect precompute on
+    // a background thread. Computes only the active theme — the other is
+    // cached lazily on first toggle.
+    let code_blocks: Vec<(String, String)> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            crate::doc::Block::CodeBlock { lang, code } => {
+                Some((lang.clone(), code.trim_end_matches('\n').to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    std::thread::spawn(move || {
+        crate::trace!("syntect_warm_start");
+        let _ = crate::highlight::syntaxes();
+        let _ = crate::highlight::themes();
+        crate::trace!("syntect_defaults_ready");
+        crate::highlight::precompute(code_blocks, dark);
+        crate::trace!("syntect_precompute_done");
+    });
 
     let mut app = App {
         title,
