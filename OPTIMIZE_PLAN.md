@@ -119,11 +119,29 @@ n=20 each, fully_rendered = max(first_present, relayout_done):
 | README.md | 37.40ms | 26.65–27.90ms | **−9.5 to −10.7ms (−25 to −29%)** |
 | examples/test.md | 51.86ms | 44.85–46.01ms | **−5.9 to −7.0ms (−11 to −14%)** |
 
-### 5. `opt-level = "s"` is sized for the wrong axis
-Cargo profile is tuned for binary size. Switch to `opt-level = 3` (or add a
-separate `release-perf` profile). Hot loops in `paint.rs` (`blend_pixel`,
-`pixmap_to_softbuffer`, glyph rasterization) benefit most. Costs maybe 1–2MB
-binary.
+### 5. `opt-level = "s"` is sized for the wrong axis ✅ DONE
+**By far the biggest single bang-for-buck change.**
+
+Switched `Cargo.toml` `[profile.release]` `opt-level` from `"s"` to `3`.
+Hot loops in `paint.rs` (`blend_pixel`, `pixmap_to_softbuffer`, glyph
+rasterization), in cosmic-text shaping during the code-block re-shape,
+and in syntect highlighting all benefit from the more aggressive
+inlining and vectorization that opt=3 enables.
+
+Binary cost: ~1MB (9.6MB → 10.7MB).
+
+Measured against post-(1+1b+2+3+4) HEAD (n=20 each batch, two batches):
+
+| doc | HEAD (opt=s) | + opt=3 | delta |
+|---|---:|---:|---:|
+| README.md | 28.27ms | 22.33–22.60ms | **−5.7ms (−20%)** |
+| examples/test.md | 45.20ms | 32.76–33.15ms | **−12ms (−27%)** |
+
+Layout itself didn't move much (~12ms in both); the win is in paint
+(README, where there's no second pass) and the code-block re-shape
+phase (test.md). Suggests cosmic-text shaping is bottlenecked by
+something other than instruction throughput, while the per-pixel paint
+loops vectorize cleanly under opt=3.
 
 ### 6. Speed up per-pixel hot loops in `paint.rs`
 - `pixmap_to_softbuffer` (paint.rs:710) is a per-pixel scalar copy. Process 4
