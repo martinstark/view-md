@@ -47,6 +47,10 @@ pub struct App {
     pub dragging: bool,
     pub modifiers: Modifiers,
     pub dpi_scale: f32,
+    /// arboard on Wayland uses smithay-clipboard, which keeps the data offer
+    /// alive only as long as the Clipboard struct lives. We hold a single
+    /// instance for the whole app lifetime so other apps can paste.
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -220,6 +224,13 @@ impl App {
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: Key) {
+        crate::trace!(
+            "key: {:?} ctrl={} shift={} alt={}",
+            key.as_ref(),
+            self.modifiers.state().control_key(),
+            self.modifiers.state().shift_key(),
+            self.modifiers.state().alt_key()
+        );
         if self.modifiers.state().control_key() {
             if matches!(key.as_ref(), Key::Character("c") | Key::Character("C")) {
                 self.copy_selection();
@@ -391,27 +402,29 @@ impl App {
     }
 
     fn yank_visible_code(&mut self) {
-        let Some(laid) = self.laid.as_ref() else { return };
         let viewport_top = self.scroll_y;
         let viewport_bottom = self.scroll_y + self.viewport_h();
         let viewport_center = (viewport_top + viewport_bottom) / 2.0;
-        let mut best: Option<(f32, &str)> = None;
-        for block in &laid.blocks {
-            if let LaidKind::CodeBlock { source, .. } = &block.kind {
-                if block.y + block.h < viewport_top || block.y > viewport_bottom {
-                    continue;
-                }
-                let center = block.y + block.h / 2.0;
-                let dist = (center - viewport_center).abs();
-                if best.map_or(true, |(d, _)| dist < d) {
-                    best = Some((dist, source.as_str()));
+        let mut best: Option<(f32, String)> = None;
+        if let Some(laid) = self.laid.as_ref() {
+            for block in &laid.blocks {
+                if let LaidKind::CodeBlock { source, .. } = &block.kind {
+                    if block.y + block.h < viewport_top || block.y > viewport_bottom {
+                        continue;
+                    }
+                    let center = block.y + block.h / 2.0;
+                    let dist = (center - viewport_center).abs();
+                    if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+                        best = Some((dist, source.clone()));
+                    }
                 }
             }
         }
         if let Some((_, src)) = best {
-            if let Ok(mut clip) = arboard::Clipboard::new() {
-                let _ = clip.set_text(src.to_string());
-            }
+            crate::trace!("yank_visible_code: {} chars", src.len());
+            self.set_clipboard(src);
+        } else {
+            crate::trace!("yank_visible_code: no code block in viewport");
         }
     }
 
@@ -444,18 +457,36 @@ impl App {
         None
     }
 
-    fn copy_selection(&self) {
-        let Some(sel) = self.selection else { return };
+    fn copy_selection(&mut self) {
+        let Some(sel) = self.selection else {
+            crate::trace!("copy_selection: no selection");
+            return;
+        };
         if sel.is_empty() {
+            crate::trace!("copy_selection: empty selection");
             return;
         }
         let Some(laid) = self.laid.as_ref() else { return };
         let (start, end) = sel.ordered();
         let text = collect_selection_text(laid, &start, &end);
-        if !text.is_empty() {
-            if let Ok(mut clip) = arboard::Clipboard::new() {
-                let _ = clip.set_text(text);
-            }
+        crate::trace!("copy_selection: {} chars", text.len());
+        if text.is_empty() {
+            return;
+        }
+        self.set_clipboard(text);
+    }
+
+    fn set_clipboard(&mut self, text: String) {
+        let n = text.len();
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        match self.clipboard.as_mut() {
+            Some(clip) => match clip.set_text(text) {
+                Ok(()) => crate::trace!("clipboard: set {n} chars"),
+                Err(e) => crate::trace!("clipboard: set_text failed: {e}"),
+            },
+            None => crate::trace!("clipboard: init failed"),
         }
     }
 

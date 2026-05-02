@@ -75,6 +75,7 @@ pub fn run(source: String, title: String) {
         dragging: false,
         modifiers: Default::default(),
         dpi_scale: 1.0,
+        clipboard: None,
     };
     event_loop.run_app(&mut app).expect("run_app");
 }
