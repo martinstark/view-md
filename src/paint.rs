@@ -12,10 +12,15 @@ pub struct Painter {
 
 impl Painter {
   pub fn new(fs: FontSystem) -> Self {
-    Self {
-      fs,
-      swash: SwashCache::new(),
-    }
+    Self::with_cache(fs, SwashCache::new())
+  }
+
+  /// Construct a painter with a pre-built (typically pre-warmed)
+  /// SwashCache. Used by the speculative layout thread to deliver an
+  /// already-rasterized cache so the first paint's glyph lookups all
+  /// hit warm.
+  pub fn with_cache(fs: FontSystem, swash: SwashCache) -> Self {
+    Self { fs, swash }
   }
 
   pub fn paint_doc(&mut self, pixmap: &mut Pixmap, doc: &LaidDoc, theme: &Theme, scroll_y: f32) {
@@ -787,6 +792,57 @@ fn blend_mask_premul(data: &mut [u8], idx: usize, sr: u32, sg: u32, sb: u32, sa:
   dst[1] = ((g * a) / 255) as u8;
   dst[2] = ((b * a) / 255) as u8;
   dst[3] = a as u8;
+}
+
+/// Walk the laid doc and call `swash.get_image(...)` on every glyph
+/// whose block falls within the first `viewport_h` physical pixels.
+/// Each `get_image` call rasterizes the glyph through swash and stores
+/// the result in the cache; subsequent paint-time lookups become
+/// O(1) hashmap hits. Designed to run on the speculative-layout
+/// background thread so the rasterization cost is paid in parallel with
+/// main-thread window/event-loop setup instead of inline during the
+/// first paint.
+pub fn warm_glyph_cache(
+  swash: &mut SwashCache,
+  fs: &mut FontSystem,
+  laid: &LaidDoc,
+  viewport_h: f32,
+) {
+  for block in &laid.blocks {
+    if block.y >= viewport_h {
+      // Blocks are layered top-down; once we pass the viewport bottom
+      // there's nothing visible left to warm.
+      break;
+    }
+    match &block.kind {
+      LaidKind::Text { buffer, .. } => warm_buffer(swash, fs, buffer),
+      LaidKind::CodeBlock {
+        buffer, lang_label, ..
+      } => {
+        warm_buffer(swash, fs, buffer);
+        if let Some(label) = lang_label.as_ref() {
+          warm_buffer(swash, fs, label);
+        }
+      }
+      LaidKind::Table { rows, .. } => {
+        for row in rows {
+          for cell in &row.cells {
+            warm_buffer(swash, fs, &cell.buffer);
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+}
+
+fn warm_buffer(swash: &mut SwashCache, fs: &mut FontSystem, buf: &Buffer) {
+  for run in buf.layout_runs() {
+    for glyph in run.glyphs.iter() {
+      let physical = glyph.physical((0., run.line_y), 1.0);
+      let _ = swash.get_image(fs, physical.cache_key);
+    }
+  }
 }
 
 pub fn pixmap_to_softbuffer(pixmap: &Pixmap, buffer: &mut [u32]) {
