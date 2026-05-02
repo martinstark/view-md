@@ -4,7 +4,7 @@ use tiny_skia::Color as SkColor;
 use crate::doc::{Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
-use crate::text::{FONT_MONO, FONT_SANS, mono_features, sans_features};
+use crate::text::{FONT_MONO, FONT_SANS, marker_features, mono_features, sans_features};
 use crate::theme::Theme;
 
 pub const MAX_CONTENT_W: f32 = 824.0;
@@ -16,7 +16,9 @@ pub const CODE_FS: f32 = 14.0;
 pub const CODE_LH_RATIO: f32 = 1.5;
 pub const BLOCK_GAP: f32 = 16.0;
 pub const HEADING_GAP_TOP: f32 = 24.0;
-pub const LIST_INDENT: f32 = 28.0;
+pub const LIST_MARKER_W: f32 = 18.0;
+pub const LIST_MARKER_GAP: f32 = 8.0;
+pub const LIST_INDENT: f32 = LIST_MARKER_W + LIST_MARKER_GAP;
 pub const LIST_ITEM_GAP: f32 = 4.0;
 pub const QUOTE_INDENT: f32 = 16.0;
 pub const QUOTE_BAR_W: f32 = 3.0;
@@ -652,13 +654,50 @@ fn layout_list(
   ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
   let s = ctx.scale;
-  let indent = LIST_INDENT * s;
   let task_box = TASK_BOX * s;
+  let gap = LIST_MARKER_GAP * s;
+  let min_marker_w = LIST_MARKER_W * s;
+  let marker_buf_w = w.max(min_marker_w);
+
+  let mut marker_bufs: Vec<Option<(Buffer, f32)>> = items
+    .iter()
+    .enumerate()
+    .map(|(i, item)| {
+      if item.task.is_some() {
+        return None;
+      }
+      let text = if ordered {
+        format!("{}.", start + i as u64)
+      } else {
+        "•".into()
+      };
+      let metrics = Metrics::new(BODY_FS * s, BODY_FS * s * BODY_LH_RATIO);
+      let mut buf = Buffer::new(fs, metrics);
+      buf.set_size(Some(marker_buf_w), None);
+      let attrs = Attrs::new()
+        .family(Family::Name(FONT_SANS))
+        .font_features(marker_features());
+      buf.set_text(&text, &attrs, Shaping::Advanced, None);
+      buf.shape_until_scroll(fs, false);
+      let measured = buf
+        .layout_runs()
+        .next()
+        .map(|r| r.line_w)
+        .unwrap_or(0.0);
+      Some((buf, measured))
+    })
+    .collect();
+
+  let widest = marker_bufs
+    .iter()
+    .filter_map(|m| m.as_ref().map(|(_, mw)| *mw))
+    .fold(0.0_f32, f32::max);
+  let marker_w = min_marker_w.max(widest);
+  let indent = marker_w + gap;
   let item_x = x + indent;
   let item_w = (w - indent).max(80.0);
   let mut all: Vec<LaidBlock> = Vec::new();
   let mut total = 0.0_f32;
-  let mut idx = start;
   for (i, item) in items.iter().enumerate() {
     if i > 0 {
       total += LIST_ITEM_GAP * s;
@@ -669,28 +708,15 @@ fn layout_list(
       all.push(LaidBlock {
         y: total + baseline_offset,
         h: task_box,
-        x: x + indent - task_box - 6.0 * s,
+        x: x + marker_w - task_box,
         kind: LaidKind::TaskBox { checked },
       });
-    } else {
-      let marker = if ordered {
-        format!("{}.", idx)
-      } else {
-        "•".into()
-      };
-      let buf = make_plain_buffer(
-        fs,
-        &marker,
-        BODY_FS * s,
-        BODY_FS * s * BODY_LH_RATIO,
-        indent,
-        FONT_SANS,
-      );
+    } else if let Some((buf, measured)) = marker_bufs[i].take() {
       let mh = buffer_height(&buf);
       all.push(LaidBlock {
         y: total,
         h: mh,
-        x,
+        x: x + marker_w - measured,
         kind: LaidKind::Text {
           buffer: buf,
           color: theme.muted,
@@ -701,7 +727,6 @@ fn layout_list(
         },
       });
     }
-    idx += 1;
 
     let inner_gap = LIST_ITEM_GAP * 2.0 * s;
     let (mut item_laid, item_h) =

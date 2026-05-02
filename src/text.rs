@@ -54,6 +54,15 @@ pub fn sans_features() -> FontFeatures {
   f
 }
 
+/// Inter with tabular figures (tnum) so digits all share the same advance
+/// width — used for ordered-list markers so periods column-align.
+pub fn marker_features() -> FontFeatures {
+  let mut f = FontFeatures::new();
+  f.set(FeatureTag::new(b"ss02"), 1);
+  f.set(FeatureTag::new(b"tnum"), 1);
+  f
+}
+
 /// JetBrains Mono with contextual alternates and standard ligatures so
 /// programming digraphs (->, =>, !=, >=, ...) render as ligatures.
 pub fn mono_features() -> FontFeatures {
