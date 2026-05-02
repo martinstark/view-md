@@ -75,9 +75,9 @@ A remote URL (not fetched in v1): ![remote example](https://example.com/img.png)
 
 ```rust
 fn main() {
-    let xs: Vec<i32> = (1..=5).collect();
-    let sum: i32 = xs.iter().sum();
-    println!("sum = {sum}");
+  let xs: Vec<i32> = (1..=5).collect();
+  let sum: i32 = xs.iter().sum();
+  println!("sum = {sum}");
 }
 ```
 
@@ -88,10 +88,10 @@ console.log(greet("world"));
 
 ```python
 def fib(n: int) -> int:
-    a, b = 0, 1
-    for _ in range(n):
-        a, b = b, a + b
-    return a
+  a, b = 0, 1
+  for _ in range(n):
+    a, b = b, a + b
+  return a
 ```
 
 ### Longer code block
@@ -104,61 +104,61 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 struct Document {
-    title: String,
-    content: Vec<String>,
-    metadata: HashMap<String, String>,
+  title: String,
+  content: Vec<String>,
+  metadata: HashMap<String, String>,
 }
 
 impl Document {
-    fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            content: Vec::new(),
-            metadata: HashMap::new(),
-        }
+  fn new(title: impl Into<String>) -> Self {
+    Self {
+      title: title.into(),
+      content: Vec::new(),
+      metadata: HashMap::new(),
     }
+  }
 
-    fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let path = path.as_ref();
-        let title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("untitled")
-            .to_string();
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut doc = Self::new(title);
-        for line in reader.lines() {
-            doc.content.push(line?);
-        }
-        Ok(doc)
+  fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    let path = path.as_ref();
+    let title = path
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .unwrap_or("untitled")
+      .to_string();
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut doc = Self::new(title);
+    for line in reader.lines() {
+      doc.content.push(line?);
     }
+    Ok(doc)
+  }
 
-    fn word_count(&self) -> usize {
-        self.content
-            .iter()
-            .flat_map(|line| line.split_whitespace())
-            .count()
-    }
+  fn word_count(&self) -> usize {
+    self.content
+      .iter()
+      .flat_map(|line| line.split_whitespace())
+      .count()
+  }
 
-    fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let mut file = File::create(path)?;
-        writeln!(file, "# {}", self.title)?;
-        for (k, v) in &self.metadata {
-            writeln!(file, "{}: {}", k, v)?;
-        }
-        for line in &self.content {
-            writeln!(file, "{}", line)?;
-        }
-        Ok(())
+  fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    writeln!(file, "# {}", self.title)?;
+    for (k, v) in &self.metadata {
+      writeln!(file, "{}: {}", k, v)?;
     }
+    for line in &self.content {
+      writeln!(file, "{}", line)?;
+    }
+    Ok(())
+  }
 }
 
 fn main() -> io::Result<()> {
-    let mut doc = Document::from_file("input.txt")?;
-    doc.metadata.insert("created".into(), "2026-05-02".into());
-    println!("loaded {} ({} words)", doc.title, doc.word_count());
-    doc.save("output.md")
+  let mut doc = Document::from_file("input.txt")?;
+  doc.metadata.insert("created".into(), "2026-05-02".into());
+  println!("loaded {} ({} words)", doc.title, doc.word_count());
+  doc.save("output.md")
 }
 ```
 
