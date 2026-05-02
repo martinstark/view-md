@@ -54,6 +54,11 @@ pub struct App {
   pub painted_once: bool,
   pub full_highlight: bool,
   pub upgrade_pending: bool,
+  /// Surface width and combined scale (zoom × dpi_scale) the speculative
+  /// pre-resumed layout was shaped against. `resumed()` compares the
+  /// actual surface against these and only re-runs layout on mismatch.
+  pub speculative_w: f32,
+  pub speculative_scale: f32,
   /// Set true by the precompute background thread once the syntect cache is
   /// warm. `App::relayout` checks this and lays out with full highlighting
   /// from the start when set, avoiding the second-pass upgrade entirely on
@@ -145,7 +150,21 @@ impl ApplicationHandler for App {
     crate::trace!("surface_ready");
 
     self.pixmap = Some(Pixmap::new(w, h).expect("pixmap"));
-    self.relayout(w as f32);
+    let actual_scale = self.zoom * self.dpi_scale.max(1.0);
+    let dims_match = (w as f32 - self.speculative_w).abs() < 0.5
+      && (actual_scale - self.speculative_scale).abs() < f32::EPSILON;
+    if dims_match {
+      crate::trace!("speculative_layout_used");
+    } else {
+      crate::trace!(
+        "speculative_layout_mismatch (w {}vs{}, scale {}vs{}); relaying out",
+        w as f32,
+        self.speculative_w,
+        actual_scale,
+        self.speculative_scale
+      );
+      self.relayout(w as f32);
+    }
     crate::trace!("layout_ready");
     self.window = Some(window.clone());
     self.surface = Some(surface);

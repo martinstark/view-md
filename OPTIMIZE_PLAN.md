@@ -151,12 +151,38 @@ loops vectorize cleanly under opt=3.
   contiguous horizontal runs from the same glyph into a single span blend.
   Could halve paint time on text-heavy docs.
 
-### 7. Start window/surface creation in parallel with layout
-**Saves ~4ms on the critical path.**
+### 7. Start window/surface creation in parallel with layout ✅ DONE
+**Saves ~1.5ms on first_present everywhere; ~1.7ms on fully_rendered for no-code docs.**
 
-In `resumed()`: window create (1ms) → surface ready → layout (5ms), serial.
-Spawn layout with assumed default width (920) on a thread the moment `doc` is
-parsed; await it in `resumed()` and only re-layout if actual width differs.
+After parse, a background thread takes ownership of the doc + painter
+FontSystem + worker FontSystems and runs `layout_parallel` against an
+assumed surface (`INITIAL_W = 920`, dpi_scale = 1.0). The main thread
+overlaps event-loop creation in the meantime; on `resumed()` we
+compare the actual surface dimensions/scale against the assumption and
+reuse the laid doc when they match (the common case on this system).
+
+**Subtlety**: the speculative layout runs *sequentially* (workers slice
+passed empty), not in parallel. Reason: syntect precompute fans out
+to one OS thread per code block, and on a 16-thread CPU adding 2
+worker threads from a parallel speculative layout cost ~2ms in
+syntect_precompute_done due to scheduler contention — wiping out the
+fully_rendered win on code-heavy docs. Sequential takes ~3ms longer
+inside the bg thread but stays off the critical path because main is
+doing 3–4ms of event-loop work in the meantime.
+
+Measured against post-(5) HEAD (n=20 each):
+
+| doc | HEAD (opt-3) | + speculative seq |
+|---|---:|---:|
+| README.md fully_rendered | 22.33–22.60ms | **20.82ms (−1.7ms)** |
+| examples/test.md first_present | 21.03–21.57ms | **19.76ms (−1.5ms)** |
+| examples/test.md fully_rendered | 32.76–33.15ms | 32.77ms (flat — syntect-bound) |
+
+For code-heavy docs the user sees first paint sooner but the
+"highlighted" finish happens at the same wall-clock moment because
+syntect precompute is the bottleneck. The fully_rendered ceiling
+won't drop further without parallelizing or batching the per-block
+syntect work itself.
 
 ### 8. Cache `LaidDoc` to disk keyed by (path, mtime, theme, zoom, dpi, width)
 For "open the same README repeatedly", deserializing a laid-out doc could be
