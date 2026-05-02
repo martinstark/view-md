@@ -87,19 +87,37 @@ Measured (n=20 each):
 | examples/test.md | 51.86ms | 50.2–51.2ms | **45.7–46.4ms (−5.4 to −6.1ms, −10–12%)** |
 | NATIVE_MD_VIEW.md (559 lines) | not measured | not measured | 48.62ms |
 
-### 3. Avoid the 2.8MB font memcpy at startup
-**Saves ~0.3ms.**
+### 3. Avoid the 2.8MB font memcpy at startup ✅ DONE
+**Saves ~0.35ms on font load (per FontSystem) and 2.8MB heap per FontSystem.**
 
-`text.rs:16` does `db.load_font_data(INTER_REGULAR.to_vec())` for 7 fonts —
-allocates and copies ~2.8MB from `.rodata` into the heap. Use
-`fontdb::Source::Binary(Arc::new(STATIC_SLICE))` to point at static data
-directly.
+`text.rs` now wraps `&'static [u8]` in a tiny `StaticFont` newtype that
+impls `AsRef<[u8]>`, then uses `db.load_font_source(Source::Binary(...))`
+instead of `load_font_data(Vec::to_vec())`. fontdb keeps the Arc'd
+reference; no copy.
 
-### 4. Swap the allocator (mimalloc)
-**~5–10% across the board.**
+Measured: `fontsystem_ready` trace point dropped from ~0.46ms to
+~0.09ms (~5×). With 3 FontSystems (painter + 2 workers from item 2),
+the heap savings is ~9MB.
 
-cosmic-text + tiny-skia + syntect do many small allocs during shaping/raster.
-One-line `#[global_allocator]` in `main.rs`. Free, almost no risk.
+### 4. Swap the allocator (mimalloc) ✅ DONE
+**~1ms across the layout/paint hot path.**
+
+Added `#[global_allocator] static GLOBAL: mimalloc::MiMalloc = MiMalloc`
+in `main.rs` with `mimalloc = "0.1"` (default-features off — no extra
+features needed). cosmic-text + tiny-skia + syntect do many small allocs
+during shaping and rasterization; mimalloc is consistently faster than
+glibc's default.
+
+Binary cost: ~500KB (9.1MB → 9.6MB).
+
+### Combined results (1+1b+2+3+4)
+
+n=20 each, fully_rendered = max(first_present, relayout_done):
+
+| doc | baseline | after | savings |
+|---|---:|---:|---:|
+| README.md | 37.40ms | 26.65–27.90ms | **−9.5 to −10.7ms (−25 to −29%)** |
+| examples/test.md | 51.86ms | 44.85–46.01ms | **−5.9 to −7.0ms (−11 to −14%)** |
 
 ### 5. `opt-level = "s"` is sized for the wrong axis
 Cargo profile is tuned for binary size. Switch to `opt-level = 3` (or add a
