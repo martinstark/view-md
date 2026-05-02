@@ -70,6 +70,7 @@ pub enum LaidKind {
     pad_y: f32,
     lang_label: Option<Buffer>,
     lang_label_color: Color,
+    lang: String,
     source: String,
   },
   Table {
@@ -526,6 +527,7 @@ fn layout_code_block(
         pad_y,
         lang_label,
         lang_label_color: theme.muted,
+        lang: lang.to_string(),
         source: code.trim_end_matches('\n').to_string(),
       },
     }],
@@ -751,6 +753,78 @@ fn compute_runs(
     byte = end;
   }
   (underlines, strikes, code_runs, links)
+}
+
+/// Re-shape just the code blocks in `laid` with full syntax highlighting,
+/// reusing all other blocks as-is. Cheap second-pass after the syntect
+/// precompute thread finishes — avoids re-shaping every paragraph, list,
+/// table and heading. Heights of code blocks may shift slightly when
+/// highlighted spans force different wrapping, so subsequent block y's
+/// and the heading/block jump tables are adjusted by accumulated delta.
+pub fn upgrade_code_block_highlights(
+  laid: &mut LaidDoc,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  scale: f32,
+) {
+  let mut delta = 0.0_f32;
+  let mut delta_points: Vec<(f32, f32)> = Vec::new();
+
+  for block in laid.blocks.iter_mut() {
+    let orig_y = block.y;
+    block.y += delta;
+
+    if let LaidKind::CodeBlock {
+      buffer,
+      pad_x,
+      pad_y,
+      width,
+      lang,
+      source,
+      ..
+    } = &mut block.kind
+    {
+      let inner_w = (*width - *pad_x * 2.0).max(80.0);
+      let spans = highlight(source, lang, theme.is_dark, true);
+      let new_buf = build_highlighted_buffer(
+        fs,
+        spans.as_ref(),
+        CODE_FS * scale,
+        CODE_FS * scale * CODE_LH_RATIO,
+        inner_w,
+      );
+      let new_inner_h = buffer_height(&new_buf);
+      let new_block_h = new_inner_h + *pad_y * 2.0;
+      let dh = new_block_h - block.h;
+      *buffer = new_buf;
+      block.h = new_block_h;
+      if dh != 0.0 {
+        delta_points.push((orig_y, dh));
+        delta += dh;
+      }
+    }
+  }
+
+  if delta_points.is_empty() {
+    return;
+  }
+
+  let shift = |y: f32| -> f32 {
+    let mut d = 0.0_f32;
+    for &(code_y, code_dh) in &delta_points {
+      if code_y < y {
+        d += code_dh;
+      }
+    }
+    y + d
+  };
+  for y in laid.heading_ys.iter_mut() {
+    *y = shift(*y);
+  }
+  for y in laid.block_ys.iter_mut() {
+    *y = shift(*y);
+  }
+  laid.total_height += delta;
 }
 
 pub fn make_plain_buffer(

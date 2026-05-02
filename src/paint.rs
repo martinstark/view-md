@@ -248,7 +248,7 @@ fn paint_block(
       pad_y,
       lang_label,
       lang_label_color,
-      source: _,
+      ..
     } => {
       if let Some(path) = rounded_rect(block.x, y, *width, block.h, 6.0) {
         let mut paint = tiny_skia::Paint::default();

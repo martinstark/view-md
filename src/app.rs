@@ -1,5 +1,7 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cosmic_text::Cursor;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
@@ -47,6 +49,11 @@ pub struct App {
   pub painted_once: bool,
   pub full_highlight: bool,
   pub upgrade_pending: bool,
+  /// Set true by the precompute background thread once the syntect cache is
+  /// warm. `App::relayout` checks this and lays out with full highlighting
+  /// from the start when set, avoiding the second-pass upgrade entirely on
+  /// no-code or fast-precompute documents.
+  pub highlight_ready: Arc<AtomicBool>,
   pub help_visible: bool,
   pub cursor: PhysicalPosition<f64>,
   pub selection: Option<Selection>,
@@ -394,6 +401,12 @@ impl App {
   }
 
   fn relayout(&mut self, surface_w: f32) {
+    // If the precompute thread has already populated the cache, lay out with
+    // full highlighting from the start — avoids the placeholder pass and a
+    // later in-place upgrade.
+    if !self.full_highlight && self.highlight_ready.load(Ordering::Acquire) {
+      self.full_highlight = true;
+    }
     let theme = Theme::select(self.dark);
     let scale = self.zoom * self.dpi_scale.max(1.0);
     let laid = layout(
@@ -576,7 +589,13 @@ impl App {
       self.upgrade_pending = false;
       self.full_highlight = true;
       crate::trace!("relayout_full_highlight");
-      self.relayout(self.current_surface_width());
+      if let Some(laid) = self.laid.as_mut() {
+        let theme = Theme::select(self.dark);
+        let scale = self.zoom * self.dpi_scale.max(1.0);
+        crate::layout::upgrade_code_block_highlights(laid, &mut self.painter.fs, &theme, scale);
+        let max = (laid.total_height - self.viewport_h()).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, max);
+      }
       crate::trace!("relayout_full_highlight_done");
     }
 
@@ -617,6 +636,12 @@ impl App {
       crate::trace!("first_present");
       self.painted_once = true;
       if !self.full_highlight {
+        // Trigger the in-place code-block upgrade now. `highlight()` cache
+        // hits return immediately; cache misses fall through to synchronous
+        // compute. Doing this immediately (vs. waiting for precompute to
+        // signal) lets the cache-hit code blocks be re-shaped in parallel
+        // with any remaining precompute work, which empirically wins on
+        // code-heavy docs.
         self.upgrade_pending = true;
         self.request_redraw();
       }
