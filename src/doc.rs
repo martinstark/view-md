@@ -106,7 +106,7 @@ enum Frame {
     Image { src: String, alt: String },
     Quote(Vec<Block>),
     List { ordered: bool, start: u64, items: Vec<ListItem> },
-    Item { task: Option<bool>, blocks: Vec<Block> },
+    Item { task: Option<bool>, blocks: Vec<Block>, pending: Vec<Inline> },
     CodeBlock { lang: String, code: String },
     TableCell(Vec<Inline>),
     FootnoteDef { label: String, blocks: Vec<Block> },
@@ -158,6 +158,7 @@ impl Builder {
             Tag::Item => self.stack.push(Frame::Item {
                 task: None,
                 blocks: Vec::new(),
+                pending: Vec::new(),
             }),
             Tag::Emphasis => self.stack.push(Frame::Em(Vec::new())),
             Tag::Strong => self.stack.push(Frame::Strong(Vec::new())),
@@ -227,7 +228,8 @@ impl Builder {
                 }
             }
             TagEnd::Item => {
-                if let Some(Frame::Item { task, blocks }) = self.stack.pop() {
+                self.flush_item_pending();
+                if let Some(Frame::Item { task, blocks, .. }) = self.stack.pop() {
                     if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
                         items.push(ListItem { task, blocks });
                     }
@@ -320,16 +322,30 @@ impl Builder {
             | Some(Frame::Strike(v))
             | Some(Frame::Link { kids: v, .. })
             | Some(Frame::TableCell(v)) => v.push(inline),
+            // Tight list items emit text directly without a Paragraph
+            // wrapper; collect into pending and flush as an implicit
+            // Paragraph at item end (or before any nested block).
+            Some(Frame::Item { pending, .. }) => pending.push(inline),
             _ => {}
         }
     }
 
     fn push_block(&mut self, block: Block) {
+        self.flush_item_pending();
         match self.stack.last_mut() {
             Some(Frame::Quote(blocks))
             | Some(Frame::Item { blocks, .. })
             | Some(Frame::FootnoteDef { blocks, .. }) => blocks.push(block),
             _ => self.blocks.push(block),
+        }
+    }
+
+    fn flush_item_pending(&mut self) {
+        if let Some(Frame::Item { pending, blocks, .. }) = self.stack.last_mut() {
+            if !pending.is_empty() {
+                let inlines = std::mem::take(pending);
+                blocks.push(Block::Paragraph(inlines));
+            }
         }
     }
 

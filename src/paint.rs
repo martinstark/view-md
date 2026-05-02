@@ -244,37 +244,7 @@ fn paint_block(
                 pixmap.fill_rect(rect, &paint, Transform::identity(), None);
             }
         }
-        LaidKind::TaskBox { checked, color, fg } => {
-            let mut border = tiny_skia::Paint::default();
-            border.set_color(*color);
-            border.anti_alias = true;
-            let size = block.h;
-            if let Some(rect) = Rect::from_xywh(block.x, y, size, size) {
-                pixmap.fill_rect(rect, &border, Transform::identity(), None);
-            }
-            let inset = 1.0;
-            let mut bg = tiny_skia::Paint::default();
-            bg.set_color(theme.bg);
-            if let Some(rect) = Rect::from_xywh(
-                block.x + inset,
-                y + inset,
-                size - inset * 2.0,
-                size - inset * 2.0,
-            ) {
-                pixmap.fill_rect(rect, &bg, Transform::identity(), None);
-            }
-            if *checked {
-                let mut chk = tiny_skia::Paint::default();
-                chk.set_color(*fg);
-                chk.anti_alias = true;
-                let pad = size * 0.20;
-                if let Some(rect) =
-                    Rect::from_xywh(block.x + pad, y + pad, size - pad * 2.0, size - pad * 2.0)
-                {
-                    pixmap.fill_rect(rect, &chk, Transform::identity(), None);
-                }
-            }
-        }
+        LaidKind::TaskBox { checked } => paint_task_box(pixmap, block.x, y, block.h, *checked, theme),
         LaidKind::CodeBlock {
             buffer,
             bg,
@@ -443,7 +413,8 @@ fn draw_run_lines(
     color: Color,
     pos: LinePos,
 ) {
-    let line_height = buf.metrics().line_height;
+    let metrics = buf.metrics();
+    let font_size = metrics.font_size;
     for run in buf.layout_runs() {
         let mut x_start: Option<f32> = None;
         let mut x_end: Option<f32> = None;
@@ -460,9 +431,10 @@ fn draw_run_lines(
             let baseline_y = run.line_y;
             let underline_y = match pos {
                 LinePos::Underline => baseline_y + 2.0,
-                LinePos::Strike => baseline_y - line_height * 0.30,
+                LinePos::Strike => baseline_y - font_size * 0.36,
             };
-            fill_line(pixmap, ox + xs, oy + underline_y, xe - xs, 1.0, color);
+            let thickness = (font_size * 0.06).max(1.0).round();
+            fill_line(pixmap, ox + xs, oy + underline_y, xe - xs, thickness, color);
         }
     }
 }
@@ -515,6 +487,37 @@ fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
     if let Some(rect) = Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)) {
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
+}
+
+fn paint_task_box(pixmap: &mut Pixmap, x: f32, y: f32, size: f32, checked: bool, theme: &Theme) {
+    let outline = ct_to_sk(theme.muted);
+    let stroke_w = (size * 0.12).max(1.5).round();
+
+    // Always: outlined box with bg interior.
+    let mut border_paint = tiny_skia::Paint::default();
+    border_paint.set_color(outline);
+    border_paint.anti_alias = true;
+    if let Some(path) = rounded_rect(x, y, size, size, size * 0.18) {
+        let stroke = tiny_skia::Stroke {
+            width: stroke_w,
+            ..Default::default()
+        };
+        pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
+    }
+
+    if checked {
+        let mut fill = tiny_skia::Paint::default();
+        fill.set_color(ct_to_sk(theme.link));
+        fill.anti_alias = true;
+        let pad = size * 0.28;
+        if let Some(rect) = Rect::from_xywh(x + pad, y + pad, size - pad * 2.0, size - pad * 2.0) {
+            pixmap.fill_rect(rect, &fill, Transform::identity(), None);
+        }
+    }
+}
+
+fn ct_to_sk(c: Color) -> SkColor {
+    SkColor::from_rgba8(c.r(), c.g(), c.b(), c.a())
 }
 
 fn paint_block_selection(
@@ -640,24 +643,34 @@ pub fn draw_buffer(
 }
 
 fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, c: Color) {
+    let sa = c.a() as u16;
+    if sa == 0 {
+        return;
+    }
+
     let w = pixmap.width();
     let idx = ((y * w + x) * 4) as usize;
     let data = pixmap.data_mut();
-    let dst_r = data[idx];
-    let dst_g = data[idx + 1];
-    let dst_b = data[idx + 2];
-    let dst_a = data[idx + 3];
 
-    let sr = c.r();
-    let sg = c.g();
-    let sb = c.b();
-    let sa = c.a();
-    let inv = 255 - sa as u16;
+    let dst_r = data[idx] as u16;
+    let dst_g = data[idx + 1] as u16;
+    let dst_b = data[idx + 2] as u16;
+    let dst_a = data[idx + 3] as u16;
 
-    let r = (sr as u16 + (dst_r as u16 * inv) / 255) as u8;
-    let g = (sg as u16 + (dst_g as u16 * inv) / 255) as u8;
-    let b = (sb as u16 + (dst_b as u16 * inv) / 255) as u8;
-    let a = (sa as u16 + (dst_a as u16 * inv) / 255) as u8;
+    let sr = c.r() as u16;
+    let sg = c.g() as u16;
+    let sb = c.b() as u16;
+    let inv = 255 - sa;
+
+    // cosmic-text delivers straight color with `alpha` as coverage:
+    // src-over-dst with straight inputs is `src*a + dst*(1-a)`. The
+    // previous formula assumed pre-multiplied source and overflowed
+    // u8 on AA edges (e.g. blue channel of off-white text on dark bg
+    // wrapped to ~0, producing yellow fringing).
+    let r = ((sr * sa + dst_r * inv) / 255) as u8;
+    let g = ((sg * sa + dst_g * inv) / 255) as u8;
+    let b = ((sb * sa + dst_b * inv) / 255) as u8;
+    let a = (sa + (dst_a * inv) / 255).min(255) as u8;
 
     let pre = PremultipliedColorU8::from_rgba(
         ((r as u16 * a as u16) / 255) as u8,

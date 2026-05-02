@@ -56,7 +56,7 @@ pub enum LaidKind {
     },
     Rule,
     Bar { color: SkColor, width: f32 },
-    TaskBox { checked: bool, color: SkColor, fg: SkColor },
+    TaskBox { checked: bool },
     CodeBlock {
         buffer: Buffer,
         bg: SkColor,
@@ -174,6 +174,7 @@ fn layout_blocks(
     fs: &mut FontSystem,
     theme: &Theme,
     ctx: &Ctx,
+    block_gap: f32,
 ) -> (Vec<LaidBlock>, f32) {
     let mut y = 0.0_f32;
     let mut out: Vec<LaidBlock> = Vec::new();
@@ -182,7 +183,7 @@ fn layout_blocks(
             let gap = if matches!(block, Block::Heading { .. }) {
                 HEADING_GAP_TOP * ctx.scale
             } else {
-                BLOCK_GAP * ctx.scale
+                block_gap
             };
             y += gap;
         }
@@ -397,7 +398,8 @@ fn layout_footnotes(
         });
         let body_x = x + 32.0;
         let body_w = (w - 32.0).max(80.0);
-        let (mut laid, dy) = layout_blocks(&def.blocks, body_w, body_x, fs, theme, ctx);
+        let (mut laid, dy) =
+            layout_blocks(&def.blocks, body_w, body_x, fs, theme, ctx, BLOCK_GAP * ctx.scale);
         for lb in laid.iter_mut() {
             lb.y += total;
         }
@@ -522,11 +524,7 @@ fn layout_list(
                 y: total + baseline_offset,
                 h: task_box,
                 x: x + indent - task_box - 6.0 * s,
-                kind: LaidKind::TaskBox {
-                    checked,
-                    color: theme.border,
-                    fg: theme.rule,
-                },
+                kind: LaidKind::TaskBox { checked },
             });
         } else {
             let marker = if ordered { format!("{}.", idx) } else { "•".into() };
@@ -555,7 +553,9 @@ fn layout_list(
         }
         idx += 1;
 
-        let (mut item_laid, item_h) = layout_blocks(&item.blocks, item_w, item_x, fs, theme, ctx);
+        let inner_gap = LIST_ITEM_GAP * 2.0 * s;
+        let (mut item_laid, item_h) =
+            layout_blocks(&item.blocks, item_w, item_x, fs, theme, ctx, inner_gap);
         for lb in item_laid.iter_mut() {
             lb.y += total;
         }
@@ -577,7 +577,8 @@ fn layout_quote(
     let indent = QUOTE_INDENT * s;
     let inner_x = x + indent;
     let inner_w = (w - indent).max(80.0);
-    let (inner_laid, inner_h) = layout_blocks(inner, inner_w, inner_x, fs, theme, ctx);
+    let (inner_laid, inner_h) =
+        layout_blocks(inner, inner_w, inner_x, fs, theme, ctx, BLOCK_GAP * s);
     let mut all: Vec<LaidBlock> = Vec::new();
     all.push(LaidBlock {
         y: 0.0,
