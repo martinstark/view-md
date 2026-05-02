@@ -370,18 +370,42 @@ fn layout_footnotes(
         kind: LaidKind::Rule,
     });
 
-    for (i, def) in defs.iter().enumerate() {
+    // Footnote labels can be numeric ("1") or word-form ("edge"). Word
+    // labels would wrap mid-word inside a fixed 32px column. Compute a
+    // shared column width sized to the longest label, capped so very long
+    // labels don't eat the body's width.
+    const FOOTNOTE_LABEL_PAD: f32 = 8.0;
+    const FOOTNOTE_LABEL_CAP: f32 = 50.0;
+    let label_fs = (BODY_FS - 1.0) * ctx.scale;
+    let label_lh = label_fs * BODY_LH_RATIO;
+    let label_pad = FOOTNOTE_LABEL_PAD * ctx.scale;
+    let label_cap = FOOTNOTE_LABEL_CAP * ctx.scale;
+    let label_max_w = (label_cap - label_pad).max(8.0);
+
+    let label_bufs: Vec<Buffer> = defs
+        .iter()
+        .map(|def| {
+            make_plain_buffer(
+                fs,
+                &format!("{}.", def.label),
+                label_fs,
+                label_lh,
+                label_max_w,
+                FONT_SANS,
+            )
+        })
+        .collect();
+    let measured = label_bufs
+        .iter()
+        .flat_map(|b| b.layout_runs())
+        .map(|r| r.line_w)
+        .fold(0.0_f32, f32::max);
+    let col_w = (measured + label_pad).min(label_cap);
+
+    for (i, (def, label_buf)) in defs.iter().zip(label_bufs.into_iter()).enumerate() {
         if i > 0 {
             total += LIST_ITEM_GAP * 2.0;
         }
-        let label_buf = make_plain_buffer(
-            fs,
-            &format!("{}.", def.label),
-            BODY_FS - 1.0,
-            (BODY_FS - 1.0) * BODY_LH_RATIO,
-            32.0,
-            FONT_SANS,
-        );
         let lh = buffer_height(&label_buf);
         all.push(LaidBlock {
             y: total,
@@ -396,15 +420,17 @@ fn layout_footnotes(
                 links: Vec::new(),
             },
         });
-        let body_x = x + 32.0;
-        let body_w = (w - 32.0).max(80.0);
+        let body_x = x + col_w;
+        let body_w = (w - col_w).max(80.0);
         let (mut laid, dy) =
             layout_blocks(&def.blocks, body_w, body_x, fs, theme, ctx, BLOCK_GAP * ctx.scale);
         for lb in laid.iter_mut() {
             lb.y += total;
         }
         all.extend(laid);
-        total += dy;
+        // Row height = max(label_height, body_height) so a wrapped label
+        // doesn't overlap the next row.
+        total += dy.max(lh);
     }
 
     (all, total)
