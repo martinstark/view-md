@@ -4,7 +4,7 @@ use tiny_skia::Color as SkColor;
 use crate::doc::{Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
-use crate::text::{FONT_MONO, FONT_SANS};
+use crate::text::{FONT_MONO, FONT_SANS, mono_features, sans_features};
 use crate::theme::Theme;
 
 pub const MAX_CONTENT_W: f32 = 824.0;
@@ -469,13 +469,18 @@ fn build_highlighted_buffer(
 ) -> Buffer {
     let metrics = Metrics::new(font_size, line_height);
     let mut buf = Buffer::new(fs, metrics);
-    buf.set_size(fs, Some(width), None);
-    let default_attrs = Attrs::new().family(Family::Name(FONT_MONO));
+    buf.set_size(Some(width), None);
+    let default_attrs = Attrs::new()
+        .family(Family::Name(FONT_MONO))
+        .font_features(mono_features());
 
     let rich: Vec<(&str, Attrs)> = spans
         .iter()
         .map(|s| {
-            let mut a = Attrs::new().family(Family::Name(FONT_MONO)).color(s.fg);
+            let mut a = Attrs::new()
+                .family(Family::Name(FONT_MONO))
+                .font_features(mono_features())
+                .color(s.fg);
             if s.bold {
                 a = a.weight(Weight::BOLD);
             }
@@ -487,9 +492,9 @@ fn build_highlighted_buffer(
         .collect();
 
     if rich.is_empty() {
-        buf.set_text(fs, "", default_attrs, Shaping::Advanced);
+        buf.set_text("", &default_attrs, Shaping::Advanced, None);
     } else {
-        buf.set_rich_text(fs, rich.into_iter(), default_attrs, Shaping::Advanced);
+        buf.set_rich_text(rich.into_iter(), &default_attrs, Shaping::Advanced, None);
     }
     buf.shape_until_scroll(fs, false);
     buf
@@ -673,12 +678,16 @@ pub fn make_plain_buffer(
 ) -> Buffer {
     let metrics = Metrics::new(font_size, line_height);
     let mut buf = Buffer::new(fs, metrics);
-    buf.set_size(fs, Some(width), None);
-    let attrs = Attrs::new().family(Family::Name(family));
-    buf.set_text(fs, text, attrs, Shaping::Advanced);
+    buf.set_size(Some(width), None);
+    let features = if family == FONT_MONO { mono_features() } else { sans_features() };
+    let attrs = Attrs::new()
+        .family(Family::Name(family))
+        .font_features(features);
+    buf.set_text(text, &attrs, Shaping::Advanced, None);
     buf.shape_until_scroll(fs, false);
     buf
 }
+
 
 pub fn buffer_height(buf: &Buffer) -> f32 {
     let lh = buf.metrics().line_height;
