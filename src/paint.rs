@@ -1,4 +1,4 @@
-use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache};
+use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache, SwashContent};
 use tiny_skia::{Color as SkColor, FillRule, Path, PathBuilder, Pixmap, Rect, Transform};
 
 use crate::doc::CellAlign;
@@ -636,84 +636,168 @@ pub fn draw_buffer(
   oy: f32,
   color: Color,
 ) {
-  let pw = pixmap.width() as i32;
+  // Iterate the cached glyph bitmap directly via `swash.get_image(...)`
+  // rather than `swash.with_pixels(...)`. `with_pixels` invokes a
+  // closure per pixel — including all the alpha=0 pixels in the glyph
+  // bounding box — which dominates paint time for text-heavy frames.
+  // cosmic-text's own docs note "use `with_image` for better
+  // performance"; we keep the same blending semantics but skip per-row
+  // and per-pixel callback overhead.
+  let pw_u = pixmap.width();
+  let pw = pw_u as i32;
   let ph = pixmap.height() as i32;
   let ox = ox as i32;
   let oy = oy as i32;
-  // 0.19's Buffer::draw takes &mut self because it auto-shapes; we
-  // already shape at layout time, so iterate layout_runs directly with
-  // an immutable reference and rasterize each glyph through swash.
+  let data = pixmap.data_mut();
   for run in buf.layout_runs() {
     for glyph in run.glyphs.iter() {
       let physical = glyph.physical((0., run.line_y), 1.0);
       let glyph_color = glyph.color_opt.unwrap_or(color);
-      swash.with_pixels(fs, physical.cache_key, glyph_color, |x, y, c| {
-        if c.a() == 0 {
-          return;
+      let Some(image) = swash.get_image(fs, physical.cache_key).as_ref() else {
+        continue;
+      };
+      let img_w = image.placement.width as i32;
+      let img_h = image.placement.height as i32;
+      if img_w == 0 || img_h == 0 {
+        continue;
+      }
+      let base_x = physical.x + image.placement.left + ox;
+      let base_y = physical.y - image.placement.top + oy;
+      match image.content {
+        SwashContent::Mask => {
+          paint_mask_glyph(data, pw_u, pw, ph, base_x, base_y, img_w, img_h, &image.data, glyph_color);
         }
-        let fx = physical.x + x + ox;
-        let fy = physical.y + y + oy;
-        if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
-          return;
+        SwashContent::Color => {
+          paint_color_glyph(data, pw_u, pw, ph, base_x, base_y, img_w, img_h, &image.data);
         }
-        blend_pixel(pixmap, fx as u32, fy as u32, c);
-      });
+        SwashContent::SubpixelMask => {}
+      }
     }
   }
 }
 
-#[inline]
-fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, c: Color) {
-  let sa = c.a() as u32;
-  if sa == 0 {
-    return;
+/// Composite a per-pixel alpha mask (single byte/pixel) onto the pixmap
+/// using `glyph_color` for RGB. This is the path 99%+ of glyphs take —
+/// regular text is single-channel coverage. We skip alpha=0 pixels with
+/// a byte read + branch instead of paying the closure call cost that
+/// `with_pixels` would.
+fn paint_mask_glyph(
+  data: &mut [u8],
+  pw_u: u32,
+  pw: i32,
+  ph: i32,
+  base_x: i32,
+  base_y: i32,
+  img_w: i32,
+  img_h: i32,
+  alpha: &[u8],
+  color: Color,
+) {
+  let sr = color.r() as u32;
+  let sg = color.g() as u32;
+  let sb = color.b() as u32;
+  let mut row_off = 0_usize;
+  for off_y in 0..img_h {
+    let fy = base_y + off_y;
+    if fy < 0 || fy >= ph {
+      row_off += img_w as usize;
+      continue;
+    }
+    let row_base = (fy as u32 * pw_u * 4) as usize;
+    for off_x in 0..img_w {
+      let sa = alpha[row_off + off_x as usize] as u32;
+      if sa == 0 {
+        continue;
+      }
+      let fx = base_x + off_x;
+      if fx < 0 || fx >= pw {
+        continue;
+      }
+      let idx = row_base + (fx as usize) * 4;
+      blend_mask_premul(data, idx, sr, sg, sb, sa);
+    }
+    row_off += img_w as usize;
   }
+}
 
-  let w = pixmap.width();
-  let idx = ((y * w + x) * 4) as usize;
-  let data = pixmap.data_mut();
+/// Color-emoji or other content delivered as RGBA8 per pixel.
+fn paint_color_glyph(
+  data: &mut [u8],
+  pw_u: u32,
+  pw: i32,
+  ph: i32,
+  base_x: i32,
+  base_y: i32,
+  img_w: i32,
+  img_h: i32,
+  rgba: &[u8],
+) {
+  let mut row_off = 0_usize;
+  let stride = img_w as usize * 4;
+  for off_y in 0..img_h {
+    let fy = base_y + off_y;
+    if fy < 0 || fy >= ph {
+      row_off += stride;
+      continue;
+    }
+    let row_base = (fy as u32 * pw_u * 4) as usize;
+    for off_x in 0..img_w {
+      let i = row_off + off_x as usize * 4;
+      let sa = rgba[i + 3] as u32;
+      if sa == 0 {
+        continue;
+      }
+      let fx = base_x + off_x;
+      if fx < 0 || fx >= pw {
+        continue;
+      }
+      let sr = rgba[i] as u32;
+      let sg = rgba[i + 1] as u32;
+      let sb = rgba[i + 2] as u32;
+      let idx = row_base + (fx as usize) * 4;
+      blend_mask_premul(data, idx, sr, sg, sb, sa);
+    }
+    row_off += stride;
+  }
+}
 
-  let dst_r = data[idx] as u32;
-  let dst_g = data[idx + 1] as u32;
-  let dst_b = data[idx + 2] as u32;
-  let dst_a = data[idx + 3];
-
-  let sr = c.r() as u32;
-  let sg = c.g() as u32;
-  let sb = c.b() as u32;
+/// Alpha-blend `(sr, sg, sb)` with coverage `sa` (0..=255) onto the
+/// premultiplied BGRA8 pixel at `data[idx..idx+4]`. Fast path
+/// (`dst_a == 255`) hits on ~99% of glyph pixels because `paint_doc`
+/// fills the pixmap with the opaque theme bg before painting blocks.
+#[inline(always)]
+fn blend_mask_premul(data: &mut [u8], idx: usize, sr: u32, sg: u32, sb: u32, sa: u32) {
+  let dst = &mut data[idx..idx + 4];
+  let dst_r = dst[0] as u32;
+  let dst_g = dst[1] as u32;
+  let dst_b = dst[2] as u32;
+  let dst_a = dst[3];
   let inv = 255 - sa;
-
-  // cosmic-text delivers straight color with `alpha` as coverage:
-  // src-over-dst is `src*a + dst*(1-a)`. Our pixmap is premultiplied
-  // but the bg fill is opaque, so dst_r etc. read back as straight.
   let r = (sr * sa + dst_r * inv) / 255;
   let g = (sg * sa + dst_g * inv) / 255;
   let b = (sb * sa + dst_b * inv) / 255;
-
   if dst_a == 255 {
-    // Fast path (~99% of glyph pixels): dst opaque, result opaque,
-    // premultiplied storage == straight value.
-    data[idx] = r as u8;
-    data[idx + 1] = g as u8;
-    data[idx + 2] = b as u8;
+    dst[0] = r as u8;
+    dst[1] = g as u8;
+    dst[2] = b as u8;
     return;
   }
-
-  // General path: dst has partial alpha (overlay/help-card pixels).
   let a = (sa + (dst_a as u32 * inv) / 255).min(255);
-  data[idx] = ((r * a) / 255) as u8;
-  data[idx + 1] = ((g * a) / 255) as u8;
-  data[idx + 2] = ((b * a) / 255) as u8;
-  data[idx + 3] = a as u8;
+  dst[0] = ((r * a) / 255) as u8;
+  dst[1] = ((g * a) / 255) as u8;
+  dst[2] = ((b * a) / 255) as u8;
+  dst[3] = a as u8;
 }
 
 pub fn pixmap_to_softbuffer(pixmap: &Pixmap, buffer: &mut [u32]) {
+  // chunks_exact(4) gives the compiler bounds info to drop per-byte
+  // checks and vectorize the BGRA->u32 conversion (this loop is ~1M
+  // iterations per frame).
   let data = pixmap.data();
-  for (i, px) in buffer.iter_mut().enumerate() {
-    let off = i * 4;
-    let r = data[off] as u32;
-    let g = data[off + 1] as u32;
-    let b = data[off + 2] as u32;
+  for (px, chunk) in buffer.iter_mut().zip(data.chunks_exact(4)) {
+    let r = chunk[0] as u32;
+    let g = chunk[1] as u32;
+    let b = chunk[2] as u32;
     *px = (r << 16) | (g << 8) | b;
   }
 }
