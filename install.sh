@@ -5,8 +5,8 @@ cd "$(dirname "$0")"
 
 BIN_DIR="${HOME}/.local/bin"
 DESKTOP_DIR="${HOME}/.local/share/applications"
-SRC_BIN="${PWD}/target/release/mdv"
-LINK="${BIN_DIR}/mdv"
+SRC_BIN="${PWD}/target/release/vmd"
+LINK="${BIN_DIR}/vmd"
 
 echo "==> building release binary"
 cargo build --release
@@ -22,11 +22,21 @@ echo "==> installing ${LINK}"
 rm -f "${LINK}"
 ln -sf "${SRC_BIN}" "${LINK}"
 
+# Clean up the old mdv name if a previous version installed it.
+if [[ -L "${BIN_DIR}/mdv" ]]; then
+  echo "==> removing old ${BIN_DIR}/mdv symlink"
+  rm -f "${BIN_DIR}/mdv"
+fi
+if [[ -f "${DESKTOP_DIR}/mdv.desktop" ]]; then
+  echo "==> removing old ${DESKTOP_DIR}/mdv.desktop"
+  rm -f "${DESKTOP_DIR}/mdv.desktop"
+fi
+
 echo "==> installing desktop entry"
-cp mdv.desktop "${DESKTOP_DIR}/mdv.desktop"
+cp vmd.desktop "${DESKTOP_DIR}/vmd.desktop"
 update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
-xdg-mime default mdv.desktop text/markdown 2>/dev/null || true
+xdg-mime default vmd.desktop text/markdown 2>/dev/null || true
 
 echo
-echo "done. try: mdv ${PWD}/examples/test.md"
-echo "        or: mdv --licenses"
+echo "done. try: vmd ${PWD}/examples/test.md"
+echo "        or: vmd --licenses"

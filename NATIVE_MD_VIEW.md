@@ -1,4 +1,4 @@
-# Native mdv — Implementation Plan
+# Native vmd — Implementation Plan
 
 Replace the Tauri webview with a native Rust binary to cut cold launch from
 ~150–250ms to <30ms while preserving feature parity.
@@ -7,7 +7,7 @@ Replace the Tauri webview with a native Rust binary to cut cold launch from
 
 **Hard goals**
 - Cold launch (binary exec → first painted frame) < 30ms on this machine
-- Feature parity with current mdv (keybinds, themes, zoom, copy, link-out)
+- Feature parity with current vmd (keybinds, themes, zoom, copy, link-out)
 - Single static binary, no JS/TS/pnpm/Tauri
 - Visual fidelity close to current GitHub-flavored output
 
@@ -25,7 +25,7 @@ Render: syntect (default-fancy) classed HTML + GH light/dark CSS.
 Chrome: theme auto + manual (persisted); zoom 0.5–3.0 (persisted); copy
 buttons on code blocks; external links via xdg-open.
 Keybinds: q t +/-/0 j/k d/u f/b g/G ] [ } { ? esc.
-CLI: `mdv <file.md | ->`.
+CLI: `vmd <file.md | ->`.
 
 ## Stack recommendation
 
@@ -131,11 +131,11 @@ Each phase is a working commit. Estimated effort assumes single dev, focused.
   - Inter Regular/Bold/Italic/BoldItalic — SIL OFL 1.1
   - JetBrains Mono Regular/Bold/Italic — SIL OFL 1.1
   - The two `OFL.txt` files **must** ship with the binary. Embed via
-    `include_str!` and expose via `mdv --licenses`.
-- `MDV_TRACE` env stays, with `Instant::now()` markers at the same checkpoints
+    `include_str!` and expose via `vmd --licenses`.
+- `VMD_TRACE` env stays, with `Instant::now()` markers at the same checkpoints
   as `lib.rs:23-31`.
 - **Exit criteria**: `cargo build --release` produces a stub binary; old
-  keybind/CLI usage docs preserved; `mdv --licenses` prints both OFL texts.
+  keybind/CLI usage docs preserved; `vmd --licenses` prints both OFL texts.
 
 ### Phase 1 — Window + first paint (1 day)
 - `app.rs`: winit `ApplicationHandler`, single window, softbuffer surface,
@@ -144,8 +144,8 @@ Each phase is a working commit. Estimated effort assumes single dev, focused.
   bundled TTFs. **Never call `db.load_system_fonts()`** — it triggers a
   fontconfig-equivalent scan that costs ~50–150ms (see Appendix A.1).
   Construct via `FontSystem::new_with_locale_and_db(locale, db)`.
-- Render a centered "mdv" string. Measure cold-start total. Run with
-  `MDV_TRACE=1` to attribute time across stages.
+- Render a centered "vmd" string. Measure cold-start total. Run with
+  `VMD_TRACE=1` to attribute time across stages.
 - **Exit criteria**: < 10ms exec→first paint on this hardware (Wayland, NVIDIA,
   9800X3D). Treat as a research spike — if missed by more than 5ms,
   investigate before proceeding rather than relying on later optimization.
@@ -268,7 +268,7 @@ enum Inline {
 - syntect theme preload: load InspiredGitHub + base16-ocean.dark on a thread
   before window open (mirror existing `lib.rs:53` pattern). Note: fonts no
   longer need preloading since they're bundled.
-- Window title `"<filename> — mdv"` (already done in `lib.rs:78`).
+- Window title `"<filename> — vmd"` (already done in `lib.rs:78`).
 - Window icon (one tiny PNG embedded via `include_bytes!`).
 - Stdin path: read fully before window create, same as today.
 - Error path: render error message to a doc and show it (don't `eprintln +
@@ -279,14 +279,14 @@ enum Inline {
   and zoomed.
 
 ### Phase 12 — Replace install path (½ day)
-- `install.sh`: `cargo build --release`; symlink `target/release/mdv` to
-  `~/.local/bin/mdv`. Drop the `WEBKIT_DISABLE_DMABUF_RENDERER` wrapper — no
+- `install.sh`: `cargo build --release`; symlink `target/release/vmd` to
+  `~/.local/bin/vmd`. Drop the `WEBKIT_DISABLE_DMABUF_RENDERER` wrapper — no
   longer needed.
-- `mdv.desktop` unchanged.
+- `vmd.desktop` unchanged.
 - Delete `src/` (TS), `index.html`, `package.json`, `pnpm-lock.yaml`,
   `vite.config.ts`, `tsconfig.json`, `node_modules/`, `dist/`. Move Rust crate
   to repo root.
-- **Exit criteria**: `mdv examples/test.md` uses the native binary; old build
+- **Exit criteria**: `vmd examples/test.md` uses the native binary; old build
   artifacts gone.
 
 ## Performance budget (commit to numbers)
@@ -330,7 +330,7 @@ single-line shaper). Fallback architecture in Appendix A.10.
 - Branch `native`. Keep `main` on Tauri until Phase 11.
 - Phase 0–2 are reversible — don't delete the Tauri tree until Phase 6
   demonstrates the approach can carry the rest of the features.
-- `MDV_TRACE` markers stay so we can diff old vs new launch profile.
+- `VMD_TRACE` markers stay so we can diff old vs new launch profile.
 
 ## Open questions
 
@@ -375,7 +375,7 @@ startup cost we'd otherwise pay.
   (3 styles). Acceptable for a desktop app.
 - License obligations: see [Appendix B](#appendix-b--font-bundling-and-licensing).
 - CLI override for users who want a different font:
-  `mdv --font-sans /path --font-mono /path file.md` — when supplied, replaces
+  `vmd --font-sans /path --font-mono /path file.md` — when supplied, replaces
   the bundled font in the database.
 
 **Why bundling beats `fc-match` at install time**:
@@ -414,7 +414,7 @@ softbuffer wraps wl_shm via the wayland-backend crate. For our buffer size
 
 - If softbuffer's allocator already uses `memfd_create`, nothing to do.
   Verify in Phase 1.
-- If not, fork the buffer alloc to use `memfd_create("mdv_shm", 0)` directly,
+- If not, fork the buffer alloc to use `memfd_create("vmd_shm", 0)` directly,
   matching tofi's `src/shm.c`.
 - Document the hugepages tuning (`/sys/kernel/mm/transparent_hugepage/shmem_enabled = advise`)
   in README as opt-in, like tofi does. Don't require it.
@@ -448,9 +448,9 @@ which initializes the perf timer. Match this:
 
 - Move `APP_START` initialization to the very first line of `main()`,
   before argv parsing.
-- Keep `MDV_TRACE` markers at every phase boundary (file read, parse, layout
+- Keep `VMD_TRACE` markers at every phase boundary (file read, parse, layout
   start/done, fontdb ready, window create, first paint).
-- Add a `--trace` CLI flag that's equivalent to `MDV_TRACE=1` for ergonomic
+- Add a `--trace` CLI flag that's equivalent to `VMD_TRACE=1` for ergonomic
   benchmarking.
 
 ### A.8 Things tofi does that we should *not* copy
@@ -513,7 +513,7 @@ Earlier I incorrectly described JetBrains Mono as Apache 2.0; it is OFL 1.1.
 - ✅ Redistribute, freely or commercially, as part of software.
 - ✅ Bundle with closed-source software (OFL is **not** copyleft for the
   software that embeds the font).
-- ❌ Sell the font file by itself (irrelevant for mdv).
+- ❌ Sell the font file by itself (irrelevant for vmd).
 - ❌ Ship a modified font under its Reserved Font Name (e.g. a tweaked Inter
   cannot still be called "Inter").
 
@@ -522,7 +522,7 @@ Earlier I incorrectly described JetBrains Mono as Apache 2.0; it is OFL 1.1.
 1. **Ship the OFL text alongside the binary.** Two acceptable approaches,
    pick one (or both):
    - Embed via `include_str!("../assets/Inter-OFL.txt")` and expose
-     `mdv --licenses` (preferred — license travels with the binary).
+     `vmd --licenses` (preferred — license travels with the binary).
    - Keep `assets/*-OFL.txt` in the repo and reference them from README.
 2. **Preserve copyright + Reserved Font Name notices** that appear in the
    OFL files. Don't strip them when copying into `assets/`.

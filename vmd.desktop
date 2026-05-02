@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=mdv
+Name=vmd
 Comment=Minimal markdown viewer
-Exec=mdv %f
+Exec=vmd %f
 MimeType=text/markdown;
 NoDisplay=true
 Terminal=false

@@ -5,7 +5,7 @@ const JBM_OFL: &str = include_str!("../assets/JetBrainsMono-OFL.txt");
 const THIRD_PARTY: &str = include_str!("../THIRD-PARTY-LICENSES.md");
 
 pub fn print() {
-    println!("# mdv");
+    println!("# vmd");
     println!();
     println!("Dual-licensed under MIT or Apache-2.0. You may choose either.");
     println!();

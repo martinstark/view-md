@@ -1,4 +1,4 @@
-# mdv smoke test
+# vmd smoke test
 
 A minimal document to verify rendering.
 
@@ -65,7 +65,7 @@ Mixed: ***bold italic***, **bold with `code` inside**, ~~strike with *italic*~~,
 
 ## Images
 
-A reference to a local file: ![mdv icon](../assets/icon.png).
+A reference to a local file: ![vmd icon](../assets/icon.png).
 
 Inline in a sentence: hello ![logo](../assets/icon.png) world.
 

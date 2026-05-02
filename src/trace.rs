@@ -6,7 +6,7 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 
 pub fn init() {
     let _ = APP_START.set(Instant::now());
-    let _ = ENABLED.set(std::env::var_os("MDV_TRACE").is_some());
+    let _ = ENABLED.set(std::env::var_os("VMD_TRACE").is_some());
 }
 
 pub fn enable() {
@@ -25,7 +25,7 @@ macro_rules! trace {
                 .get()
                 .map(|t| t.elapsed().as_micros() as f64 / 1000.0)
                 .unwrap_or(0.0);
-            eprintln!("[mdv] {:>7.3}ms {}", elapsed, format_args!($($arg)*));
+            eprintln!("[vmd] {:>7.3}ms {}", elapsed, format_args!($($arg)*));
         }
     };
 }

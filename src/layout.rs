@@ -376,7 +376,9 @@ fn layout_footnotes(
     // labels don't eat the body's width.
     const FOOTNOTE_LABEL_PAD: f32 = 8.0;
     const FOOTNOTE_LABEL_CAP: f32 = 50.0;
-    let label_fs = (BODY_FS - 1.0) * ctx.scale;
+    // Match body metrics so label baselines align with the body's first
+    // line of text.
+    let label_fs = BODY_FS * ctx.scale;
     let label_lh = label_fs * BODY_LH_RATIO;
     let label_pad = FOOTNOTE_LABEL_PAD * ctx.scale;
     let label_cap = FOOTNOTE_LABEL_CAP * ctx.scale;
