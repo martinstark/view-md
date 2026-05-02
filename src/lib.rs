@@ -10,6 +10,9 @@ pub mod text;
 pub mod theme;
 pub mod trace;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use winit::event_loop::EventLoop;
 
 use crate::app::App;
@@ -31,11 +34,6 @@ pub fn run(source: String, title: String) {
     .unwrap_or(1.0)
     .clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
 
-  // Spawn the syntect precompute as early as possible, before
-  // EventLoop::new() and window/surface setup. The thread runs in
-  // parallel with the entire setup-to-first-paint path; on this hardware
-  // all 3 blocks finish around the time first_present fires, so the
-  // frame-2 relayout finds spans already cached.
   let code_blocks: Vec<(String, String)> = doc
     .blocks
     .iter()
@@ -46,6 +44,15 @@ pub fn run(source: String, title: String) {
       _ => None,
     })
     .collect();
+
+  // Spawn the syntect precompute thread before building the event loop so
+  // its work overlaps with winit/Wayland init. When done, it just sets the
+  // atomic — no proxy/wake needed: the redraw loop self-triggers an upgrade
+  // after first paint, and `App::relayout` auto-promotes if the flag is
+  // already set (saves the entire second pass on no-code/fast-precompute
+  // docs like README).
+  let highlight_ready = Arc::new(AtomicBool::new(false));
+  let ready_for_thread = highlight_ready.clone();
   std::thread::spawn(move || {
     crate::trace!("syntect_warm_start");
     let _ = crate::highlight::syntaxes();
@@ -53,6 +60,7 @@ pub fn run(source: String, title: String) {
     crate::trace!("syntect_defaults_ready");
     crate::highlight::precompute(code_blocks, dark);
     crate::trace!("syntect_precompute_done");
+    ready_for_thread.store(true, Ordering::Release);
   });
 
   let event_loop = EventLoop::new().expect("event loop");
@@ -73,6 +81,7 @@ pub fn run(source: String, title: String) {
     painted_once: false,
     full_highlight: false,
     upgrade_pending: false,
+    highlight_ready,
     help_visible: false,
     cursor: winit::dpi::PhysicalPosition::new(0.0, 0.0),
     selection: None,
