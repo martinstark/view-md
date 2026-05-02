@@ -143,13 +143,41 @@ phase (test.md). Suggests cosmic-text shaping is bottlenecked by
 something other than instruction throughput, while the per-pixel paint
 loops vectorize cleanly under opt=3.
 
-### 6. Speed up per-pixel hot loops in `paint.rs`
-- `pixmap_to_softbuffer` (paint.rs:710) is a per-pixel scalar copy. Process 4
-  pixels/iteration with `chunks_exact`, use bit shifts, or pull in `bytemuck`
-  + SIMD.
-- `blend_pixel` (paint.rs:666) is called once per glyph pixel. Batch
-  contiguous horizontal runs from the same glyph into a single span blend.
-  Could halve paint time on text-heavy docs.
+### 6. Speed up per-pixel hot loops in `paint.rs` ✅ DONE
+**Saves ~0.5ms in the paint phase (~6–8% of paint).**
+
+Two changes:
+
+1. **Switched glyph rendering from `swash.with_pixels(...)` to
+   `swash.get_image(...)`** plus direct iteration over the returned
+   bitmap. cosmic-text's `with_pixels` invokes the callback once per
+   pixel in the glyph bounding box — including all the alpha=0 pixels,
+   which dominate the box for text glyphs. cosmic-text's own docs note
+   "use `with_image` for better performance". The new `paint_mask_glyph`
+   walks the alpha mask directly with a byte read + branch to skip
+   transparent pixels, no closure call.
+
+2. **Hoisted `pixmap.data_mut()` and `pixmap.width()` outside the
+   per-pixel hot loop** so `blend_mask_premul` doesn't repeatedly
+   re-borrow / re-fetch them.
+
+3. **`pixmap_to_softbuffer` uses `chunks_exact(4)`** to give the
+   optimizer bounds-elision and vectorization info on the ~1M-pixel
+   BGRA→u32 conversion per frame.
+
+Measured (n=50 each):
+
+| metric | HEAD (onig) | + paint opts | delta |
+|---|---:|---:|---:|
+| test.md paint_dur (fp − redraw_first) | 5.61ms | 5.18ms | **−0.43ms (−8%)** |
+| README.md paint_dur | 8.10ms | 7.62ms | **−0.48ms (−6%)** |
+
+Honest framing: an earlier attempt (chunks_exact + pre-extraction
+only, no `get_image` switch) bought ~0.3ms and was within noise. The
+`get_image` switch is what actually moved the needle, and it only
+moved it ~0.5ms because paint is no longer the dominant phase
+post-onig — `pixmap.fill`, swash glyph rasterization, and Wayland
+present each contribute their own fixed costs.
 
 ### 7. Start window/surface creation in parallel with layout ✅ DONE
 **Saves ~1.5ms on first_present everywhere; ~1.7ms on fully_rendered for no-code docs.**
