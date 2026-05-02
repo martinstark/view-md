@@ -634,10 +634,15 @@ fn build_highlighted_buffer(
     })
     .collect();
 
+  // T6 (mono fast-path): code blocks use JBM (fixed-pitch). Shaping::Basic
+  // skips BiDi + script segmentation + the OpenType shaper. Loses the
+  // `calt`/`liga` substitutions for `->`/`=>`/`!=`/`>=`/`<=`/`==`/`::`/...
+  // since those are applied by the shaper. ASCII code is still readable
+  // — `-` `>` instead of `→` etc. Trades visual polish for shaping speed.
   if rich.is_empty() {
-    buf.set_text("", &default_attrs, Shaping::Advanced, None);
+    buf.set_text("", &default_attrs, Shaping::Basic, None);
   } else {
-    buf.set_rich_text(rich.into_iter(), &default_attrs, Shaping::Advanced, None);
+    buf.set_rich_text(rich.into_iter(), &default_attrs, Shaping::Basic, None);
   }
   buf.shape_until_scroll(fs, false);
   buf
