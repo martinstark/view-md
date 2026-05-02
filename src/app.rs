@@ -478,13 +478,28 @@ impl App {
 
     fn set_clipboard(&mut self, text: String) {
         let n = text.len();
+        // On Wayland, arboard uses smithay-clipboard with its own Wayland
+        // connection; on some compositors that disconnected connection is
+        // never granted clipboard ownership and set_text returns Ok without
+        // actually advertising the data. wl-copy is the canonical Wayland
+        // path: it reads stdin and daemonises itself to keep the clipboard
+        // alive past our process.
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            match wl_copy(&text) {
+                Ok(()) => {
+                    crate::trace!("clipboard: wl-copy {n} chars");
+                    return;
+                }
+                Err(e) => crate::trace!("clipboard: wl-copy failed ({e}); falling back to arboard"),
+            }
+        }
         if self.clipboard.is_none() {
             self.clipboard = arboard::Clipboard::new().ok();
         }
         match self.clipboard.as_mut() {
             Some(clip) => match clip.set_text(text) {
-                Ok(()) => crate::trace!("clipboard: set {n} chars"),
-                Err(e) => crate::trace!("clipboard: set_text failed: {e}"),
+                Ok(()) => crate::trace!("clipboard: arboard set {n} chars"),
+                Err(e) => crate::trace!("clipboard: arboard set_text failed: {e}"),
             },
             None => crate::trace!("clipboard: init failed"),
         }
@@ -581,6 +596,19 @@ impl App {
 enum JumpKind {
     Heading,
     Block,
+}
+
+fn wl_copy(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("wl-copy").stdin(Stdio::piped()).spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    // wl-copy reads stdin to EOF then daemonises itself; the foreground
+    // process exits cleanly, leaving the clipboard in the daemon's hands.
+    let _ = child.wait()?;
+    Ok(())
 }
 
 fn collect_selection_text(laid: &LaidDoc, start: &HitPoint, end: &HitPoint) -> String {
