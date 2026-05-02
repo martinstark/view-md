@@ -13,13 +13,29 @@ pub mod trace;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use cosmic_text::FontSystem;
 use winit::event_loop::EventLoop;
 
 use crate::app::App;
 use crate::paint::Painter;
 
+/// Number of background FontSystems used for parallel block shaping in
+/// `layout_parallel`. With this, layout runs on `1 + N_LAYOUT_WORKERS`
+/// lanes (caller thread + workers). Each worker holds its own ~3MB font
+/// data; bumping this trades memory for layout speedup. 2 keeps memory
+/// modest and gets most of the gain on the typical 30–60-block doc.
+const N_LAYOUT_WORKERS: usize = 2;
+
 pub fn run(source: String, title: String) {
   crate::trace!("run_start");
+
+  // Build worker FontSystems on a background thread so the ~1ms cost
+  // overlaps with parse + window/event-loop setup on the main thread.
+  let workers_handle = std::thread::spawn(|| -> Vec<FontSystem> {
+    (0..N_LAYOUT_WORKERS)
+      .map(|_| crate::text::build_font_system())
+      .collect()
+  });
 
   let fs = crate::text::build_font_system();
   crate::trace!("fontsystem_ready");
@@ -66,11 +82,15 @@ pub fn run(source: String, title: String) {
   let event_loop = EventLoop::new().expect("event loop");
   crate::trace!("event_loop_created");
 
+  let layout_workers = workers_handle.join().expect("layout workers build");
+  crate::trace!("layout_workers_ready");
+
   let mut app = App {
     wayland_clipboard: None,
     title,
     doc,
     painter: Painter::new(fs),
+    layout_workers,
     dark,
     zoom,
     scroll_y: 0.0,
