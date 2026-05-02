@@ -24,17 +24,15 @@ pub fn run(source: String, title: String) {
     let doc = crate::doc::parse(&source);
     crate::trace!("doc_parsed");
 
-
-    let event_loop = EventLoop::new().expect("event loop");
-    crate::trace!("event_loop_created");
-
     let prefs = crate::state::load();
     let dark = prefs.theme.unwrap_or_else(detect_dark);
     let zoom = prefs.zoom.unwrap_or(1.0).clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
 
-    // Now that the active theme is known, kick the syntect precompute on
-    // a background thread. Computes only the active theme — the other is
-    // cached lazily on first toggle.
+    // Spawn the syntect precompute as early as possible, before
+    // EventLoop::new() and window/surface setup. The thread runs in
+    // parallel with the entire setup-to-first-paint path; on this hardware
+    // all 3 blocks finish around the time first_present fires, so the
+    // frame-2 relayout finds spans already cached.
     let code_blocks: Vec<(String, String)> = doc
         .blocks
         .iter()
@@ -53,6 +51,9 @@ pub fn run(source: String, title: String) {
         crate::highlight::precompute(code_blocks, dark);
         crate::trace!("syntect_precompute_done");
     });
+
+    let event_loop = EventLoop::new().expect("event loop");
+    crate::trace!("event_loop_created");
 
     let mut app = App {
         title,

@@ -59,9 +59,12 @@ laid-out doc in ~14 ms and adds syntax colour ~16 ms after that.
 - Defer syntect to frame 2. Frame 1 paints code blocks as plain monospace
   with the same geometry and presents at ~14 ms; frame 2 swaps in
   highlighted buffers. Doing it inline would block frame 1 for ~60 ms.
-- Parallel highlight precompute, one worker per block. Different languages
-  compile regexes independently, so 3 blocks finish in ~25 ms (the slowest
-  one) instead of ~75 ms summed.
+- Parallel highlight precompute, one worker per block, spawned right after
+  parse. The bg threads run through the entire window-setup-to-first-paint
+  path; on this hardware 3 blocks finish around the time first_present fires,
+  so frame 2 finds the spans already cached. Different languages compile
+  regexes independently, so 3 blocks finish in ~25 ms (the slowest one)
+  instead of ~75 ms summed.
 - Memoize by `(lang, code, theme)`. Resize, zoom, and theme toggle hit the
   cache (<1 ms) instead of re-running syntect (~60 ms each).
 - Active theme only at startup. The other theme fills lazily on first `t`,
