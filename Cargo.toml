@@ -2,8 +2,8 @@
 name = "vmd"
 version = "0.2.0"
 description = "Minimal native markdown viewer"
-edition = "2021"
-rust-version = "1.77"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
@@ -13,13 +13,13 @@ path = "src/main.rs"
 [dependencies]
 winit = "0.30"
 softbuffer = "0.4"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 cosmic-text = "0.19"
 fontdb = "0.23"
 pulldown-cmark = { version = "0.13", default-features = false }
-syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 arboard = "3"
-opener = "0.7"
+opener = "0.8"
 
 [profile.release]
 codegen-units = 1
