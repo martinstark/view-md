@@ -22,16 +22,6 @@ echo "==> installing ${LINK}"
 rm -f "${LINK}"
 ln -sf "${SRC_BIN}" "${LINK}"
 
-# Clean up the old mdv name if a previous version installed it.
-if [[ -L "${BIN_DIR}/mdv" ]]; then
-  echo "==> removing old ${BIN_DIR}/mdv symlink"
-  rm -f "${BIN_DIR}/mdv"
-fi
-if [[ -f "${DESKTOP_DIR}/mdv.desktop" ]]; then
-  echo "==> removing old ${DESKTOP_DIR}/mdv.desktop"
-  rm -f "${DESKTOP_DIR}/mdv.desktop"
-fi
-
 echo "==> installing desktop entry"
 cp vmd.desktop "${DESKTOP_DIR}/vmd.desktop"
 update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
