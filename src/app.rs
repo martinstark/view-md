@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use cosmic_text::{Cursor, FontSystem};
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
@@ -166,6 +167,26 @@ impl ApplicationHandler for App {
       self.relayout(w as f32);
     }
     crate::trace!("layout_ready");
+
+    // Wait briefly for the syntect precompute to finish before painting,
+    // so `redraw()`'s in-line "if highlight_ready, do upgrade now" check
+    // fires deterministically — single highlighted paint instead of a
+    // placeholder pass followed by a flash to highlighted ~2ms later.
+    // Bounded so a pathologically slow syntect (many languages × many
+    // grammars) doesn't push first paint indefinitely; in that case we
+    // fall through to placeholder paint + async upgrade, the same path
+    // we had before this wait existed.
+    if !self.highlight_ready.load(Ordering::Acquire) {
+      let deadline = Instant::now() + Duration::from_millis(5);
+      while !self.highlight_ready.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::yield_now();
+      }
+      crate::trace!(
+        "syntect_wait_done ready={}",
+        self.highlight_ready.load(Ordering::Acquire)
+      );
+    }
+
     self.window = Some(window.clone());
     self.surface = Some(surface);
     // Paint synchronously instead of going through

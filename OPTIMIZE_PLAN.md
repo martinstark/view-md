@@ -212,6 +212,43 @@ syntect precompute is the bottleneck. The fully_rendered ceiling
 won't drop further without parallelizing or batching the per-block
 syntect work itself.
 
+### 7e. Wait briefly for syntect before painting (deterministic in-line upgrade) ✅ DONE
+**Eliminates the placeholder→highlighted flash on code-heavy docs;
+saves ~1ms on `fully_rendered` mean.**
+
+`redraw()`'s in-line "if highlight_ready, do upgrade now" check (item
+7b) was firing probabilistically — sometimes syntect happened to
+finish before redraw ran, sometimes not. When it didn't, we'd paint a
+gray placeholder code block then flash to highlighted ~2ms later via
+the async upgrade path.
+
+Fix: in `App::resumed`, after window/surface setup but before calling
+`self.redraw()`, busy-wait on `highlight_ready` with a 5ms cap. On
+typical docs syntect finishes around the same wall-clock time as
+spec_join (~6–7ms) so the wait is usually 0–1ms. On pathological docs
+(many languages × slow grammars), the cap kicks in and we fall
+through to the previous placeholder + async-upgrade behavior — no
+worse than before.
+
+Measured (n=100 each, 2 batches):
+
+| metric | HEAD | +wait | delta |
+|---|---:|---:|---:|
+| test.md fp mean | 14.10ms | 13.33ms | −0.77ms |
+| test.md fully mean | 14.30ms | 13.33ms | −0.97ms |
+| test.md fp min | 9.44ms | 10.31ms | +0.87ms (waits when it would have raced) |
+| README.md fp min | 11.10ms | 8.78ms | first single-run sub-9ms |
+
+For test.md, `fully` now deterministically equals `fp` — variance
+between async-upgrade runs is gone. For README, the syntect-done
+atomic is true long before resumed runs, so the wait skips and the
+code path is identical (any measured improvement is probably load
+variance).
+
+Tradeoff: ~1ms slower on the absolute fastest runs (those that
+previously skipped the in-line check by happenstance) in exchange for
+~1ms-better mean and a stable single-paint UX.
+
 ### 7c. Pre-warm the swash glyph cache on the speculative-layout thread ✅ DONE
 **Saves ~3.5ms in the paint phase (~70% of paint).**
 
