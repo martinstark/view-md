@@ -2,9 +2,9 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use cosmic_text::Cursor;
+use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
 use tiny_skia::Pixmap;
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
