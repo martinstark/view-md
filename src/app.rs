@@ -95,7 +95,7 @@ impl ApplicationHandler for App {
         crate::trace!("resumed");
 
         let attrs = Window::default_attributes()
-            .with_title(format!("{} — mdv", self.title))
+            .with_title(format!("{} — vmd", self.title))
             .with_inner_size(LogicalSize::new(920.0, 1100.0));
         let window = Rc::new(event_loop.create_window(attrs).expect("window create"));
         crate::trace!("window_created");

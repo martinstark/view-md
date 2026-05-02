@@ -1,12 +1,12 @@
 # Third-party licenses
 
-mdv embeds these dependencies as part of the released binary. Their licenses
-are reproduced in full below. mdv itself is dual-licensed under MIT or
+vmd embeds these dependencies as part of the released binary. Their licenses
+are reproduced in full below. vmd itself is dual-licensed under MIT or
 Apache-2.0; see `LICENSE-MIT` and `LICENSE-APACHE` in the repository root.
 
 ## Overview
 
-- MIT License (270)
+- MIT License (260)
 - Apache License 2.0 (10)
 - BSD 3-Clause "New" or "Revised" License (2)
 - Boost Software License 1.0 (2)
@@ -1110,75 +1110,6 @@ THIS SOFTWARE.
 
 Used by:
 
-- rustybuzz 0.14.1 (https://github.com/RazrFalcon/rustybuzz)
-
-```
-    MIT License
-
-    Copyright (c) Microsoft Corporation.
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE
-
-```
-
-
-## MIT License
-
-Used by:
-
-- rayon-core 1.13.0 (https://github.com/rayon-rs/rayon)
-- rayon 1.12.0 (https://github.com/rayon-rs/rayon)
-
-```
-Copyright (c) 2010 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-
-## MIT License
-
-Used by:
-
 - core-foundation-sys 0.8.7 (https://github.com/servo/core-foundation-rs)
 - core-foundation 0.9.4 (https://github.com/servo/core-foundation-rs)
 - core-graphics-types 0.1.3 (https://github.com/servo/core-foundation-rs)
@@ -1446,42 +1377,6 @@ THE SOFTWARE.
 
 Used by:
 
-- either 1.15.0 (https://github.com/rayon-rs/either)
-
-```
-Copyright (c) 2015
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-
-## MIT License
-
-Used by:
-
 - plist 1.9.0 (https://github.com/ebarnard/rust-plist/)
 
 ```
@@ -1550,7 +1445,6 @@ Used by:
 
 - linked-hash-map 0.5.6 (https://github.com/contain-rs/linked-hash-map)
 - unicode-bidi 0.3.18 (https://github.com/servo/unicode-bidi)
-- unicode-properties 0.1.4 (https://github.com/unicode-rs/unicode-properties)
 - unicode-segmentation 1.13.2 (https://github.com/unicode-rs/unicode-segmentation)
 
 ```
@@ -2278,9 +2172,6 @@ THE SOFTWARE.
 
 Used by:
 
-- ttf-parser 0.20.0 (https://github.com/RazrFalcon/ttf-parser)
-- ttf-parser 0.21.1 (https://github.com/RazrFalcon/ttf-parser)
-- ttf-parser 0.24.1 (https://github.com/RazrFalcon/ttf-parser)
 - ttf-parser 0.25.1 (https://github.com/harfbuzz/ttf-parser)
 
 ```
@@ -2385,8 +2276,9 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- font-types 0.7.3 (https://github.com/googlefonts/fontations)
-- skrifa 0.22.3 (https://github.com/googlefonts/fontations)
+- font-types 0.11.3 (https://github.com/googlefonts/fontations)
+- read-fonts 0.37.0 (https://github.com/googlefonts/fontations)
+- skrifa 0.40.0 (https://github.com/googlefonts/fontations)
 
 ```
 Copyright (c) 2019 Colin Rothfels
@@ -2531,8 +2423,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- swash 0.1.19 (https://github.com/dfrg/swash)
-- zeno 0.2.3 (https://github.com/dfrg/zeno)
+- swash 0.2.7 (https://github.com/dfrg/swash)
 
 ```
 Copyright (c) 2020 Chad Brokaw
@@ -2567,7 +2458,42 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- yazi 0.1.6 (https://github.com/dfrg/yazi)
+- zeno 0.3.3 (https://github.com/dfrg/zeno)
+
+```
+Copyright (c) 2020 Chad Brokaw
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+
+## MIT License
+
+Used by:
+
+- yazi 0.2.1 (https://github.com/dfrg/yazi)
 
 ```
 Copyright (c) 2020 Chad Brokaw
@@ -3714,11 +3640,43 @@ SOFTWARE.
 
 Used by:
 
-- mdv 0.2.0
+- vmd 0.2.0
+
+```
+MIT License
+
+Copyright (c) 2026 Martin Stark
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+
+## MIT License
+
+Used by:
+
 - block2 0.5.1 (https://github.com/madsmtm/objc2)
 - dispatch 0.2.0 (http://github.com/SSheldon/rust-dispatch)
 - dpi 0.1.2 (https://github.com/rust-windowing/winit)
 - drm-fourcc 2.2.0 (https://github.com/danielzfranklin/drm-fourcc-rs)
+- harfrust 0.5.2 (https://github.com/harfbuzz/harfrust)
 - jni-macros 0.22.4 (https://github.com/jni-rs/jni-rs)
 - jni-sys-macros 0.4.1 (https://github.com/jni-rs/jni-sys)
 - jni 0.22.4 (https://github.com/jni-rs/jni-rs)
@@ -3739,7 +3697,6 @@ Used by:
 - objc2 0.5.2 (https://github.com/madsmtm/objc2)
 - objc2 0.6.4 (https://github.com/madsmtm/objc2)
 - r-efi 5.3.0 (https://github.com/r-efi/r-efi)
-- read-fonts 0.22.7 (https://github.com/googlefonts/fontations)
 - windows-link 0.2.1 (https://github.com/microsoft/windows-rs)
 - windows-sys 0.52.0 (https://github.com/microsoft/windows-rs)
 - windows-sys 0.59.0 (https://github.com/microsoft/windows-rs)
@@ -3961,6 +3918,7 @@ Used by:
 
 - android-activity 0.6.1 (https://github.com/rust-mobile/android-activity)
 - half 2.7.1 (https://github.com/VoidStarKat/half-rs)
+- linebender_resource_handle 0.1.1 (https://github.com/linebender/raw_resource_handle)
 
 ```
 MIT License
@@ -4060,6 +4018,39 @@ SOFTWARE.
 
 Used by:
 
+- rustc-hash 2.1.2 (https://github.com/rust-lang/rustc-hash)
+
+```
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+
+## MIT License
+
+Used by:
+
 - adler2 2.0.1 (https://github.com/oyvindln/adler2)
 - atomic-waker 1.1.2 (https://github.com/smol-rs/atomic-waker)
 - concurrent-queue 2.5.0 (https://github.com/smol-rs/concurrent-queue)
@@ -4082,7 +4073,6 @@ Used by:
 - proc-macro-crate 3.5.0 (https://github.com/bkchr/proc-macro-crate)
 - proc-macro2 1.0.106 (https://github.com/dtolnay/proc-macro2)
 - quote 1.0.45 (https://github.com/dtolnay/quote)
-- rustc-hash 1.1.0 (https://github.com/rust-lang-nursery/rustc-hash)
 - rustix 0.38.44 (https://github.com/bytecodealliance/rustix)
 - rustix 1.1.4 (https://github.com/bytecodealliance/rustix)
 - rustversion 1.0.22 (https://github.com/dtolnay/rustversion)
@@ -4093,6 +4083,7 @@ Used by:
 - serde_json 1.0.149 (https://github.com/serde-rs/json)
 - simd_cesu8 1.1.1 (https://github.com/seancroach/simd_cesu8)
 - smol_str 0.2.2 (https://github.com/rust-analyzer/smol_str)
+- smol_str 0.3.6 (https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str)
 - syn 2.0.117 (https://github.com/dtolnay/syn)
 - thiserror-impl 1.0.69 (https://github.com/dtolnay/thiserror)
 - thiserror-impl 2.0.18 (https://github.com/dtolnay/thiserror)
@@ -4553,8 +4544,6 @@ THE SOFTWARE.
 
 Used by:
 
-- crossbeam-deque 0.8.6 (https://github.com/crossbeam-rs/crossbeam)
-- crossbeam-epoch 0.9.18 (https://github.com/crossbeam-rs/crossbeam)
 - crossbeam-utils 0.8.21 (https://github.com/crossbeam-rs/crossbeam)
 
 ```
@@ -4593,10 +4582,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- fontdb 0.16.2 (https://github.com/RazrFalcon/fontdb)
-- fontdb 0.21.0 (https://github.com/RazrFalcon/fontdb)
-- unicode-bidi-mirroring 0.2.0 (https://github.com/RazrFalcon/unicode-bidi-mirroring)
-- unicode-ccc 0.2.0 (https://github.com/RazrFalcon/unicode-ccc)
+- fontdb 0.23.0 (https://github.com/RazrFalcon/fontdb)
 
 ```
 The MIT License (MIT)
@@ -4628,7 +4614,7 @@ SOFTWARE.
 
 Used by:
 
-- cosmic-text 0.12.1 (https://github.com/pop-os/cosmic-text)
+- cosmic-text 0.19.0 (https://github.com/pop-os/cosmic-text)
 
 ```
 The MIT License (MIT)

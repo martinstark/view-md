@@ -1,4 +1,4 @@
-# mdv
+# vmd
 
 Minimal native markdown viewer. Single static binary, no webview, cold-launches in
 ~13 ms instead of ~200 ms.
@@ -6,22 +6,22 @@ Minimal native markdown viewer. Single static binary, no webview, cold-launches 
 ## Build
 
     cargo build --release
-    ./install.sh   # symlinks target/release/mdv into ~/.local/bin and installs the .desktop entry
+    ./install.sh   # symlinks target/release/vmd into ~/.local/bin and installs the .desktop entry
 
 ## Use
 
-    mdv file.md
-    mdv -                   # read from stdin
-    mdv --licenses          # print mdv's license + bundled fonts + all third-party deps
-    mdv --trace             # print timing breakdown
-    MDV_TRACE=1 mdv file.md  # same as --trace
+    vmd file.md
+    vmd -                   # read from stdin
+    vmd --licenses          # print vmd's license + bundled fonts + all third-party deps
+    vmd --trace             # print timing breakdown
+    VMD_TRACE=1 vmd file.md  # same as --trace
 
 In the app, `?` shows the full keybind list.
 
 ## License
 
-mdv is dual-licensed under MIT or Apache-2.0; see `LICENSE-MIT` and
-`LICENSE-APACHE`. Run `mdv --licenses` (or read `THIRD-PARTY-LICENSES.md`)
+vmd is dual-licensed under MIT or Apache-2.0; see `LICENSE-MIT` and
+`LICENSE-APACHE`. Run `vmd --licenses` (or read `THIRD-PARTY-LICENSES.md`)
 for the full text of every embedded dependency.
 
 To regenerate `THIRD-PARTY-LICENSES.md` after a `cargo update` or new dep:
@@ -31,8 +31,8 @@ To regenerate `THIRD-PARTY-LICENSES.md` after a `cargo update` or new dep:
 
 ## Bundled fonts
 
-mdv embeds the following fonts to skip fontconfig at startup. Both are under
-the SIL Open Font License 1.1. See `mdv --licenses` or the files in `assets/`
+vmd embeds the following fonts to skip fontconfig at startup. Both are under
+the SIL Open Font License 1.1. See `vmd --licenses` or the files in `assets/`
 for the full text.
 
 - Inter (Regular, Bold, Italic, BoldItalic). © 2016 The Inter Project Authors. https://github.com/rsms/inter
@@ -48,7 +48,7 @@ for the full text.
 ## How it stays fast
 
 Measured on a Ryzen 9 9800X3D, Wayland/sway, against `examples/test.md`. The
-Tauri webview this replaced cold-launches in 150 to 250 ms. mdv shows the
+Tauri webview this replaced cold-launches in 150 to 250 ms. vmd shows the
 laid-out doc in ~14 ms and adds syntax colour ~16 ms after that.
 
 - Bundled fonts. `cosmic_text::FontSystem::new()` scans system fonts via
@@ -72,5 +72,5 @@ laid-out doc in ~14 ms and adds syntax colour ~16 ms after that.
 - Tight blend loop. `Buffer::draw` runs per-pixel; the inner blend is a
   single inline call with a fast path for opaque destinations. ~1 to 2 ms
   saved per frame.
-- `MDV_TRACE=1 mdv file.md` prints per-stage timing. Every choice above
+- `VMD_TRACE=1 vmd file.md` prints per-stage timing. Every choice above
   came from reading the trace.

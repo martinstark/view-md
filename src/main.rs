@@ -2,17 +2,17 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mdv::trace;
+use vmd::trace;
 
 fn usage() -> ! {
     eprintln!(
-        "mdv — minimal native markdown viewer\n\
+        "vmd — minimal native markdown viewer\n\
          \n\
-         usage: mdv [flags] <file.md | ->\n\
+         usage: vmd [flags] <file.md | ->\n\
          \n\
          flags:\n\
          \x20\x20--licenses     print bundled font licenses (SIL OFL 1.1)\n\
-         \x20\x20--trace        print timing breakdown (also: MDV_TRACE=1)\n\
+         \x20\x20--trace        print timing breakdown (also: VMD_TRACE=1)\n\
          \x20\x20-h, --help     this message\n\
          \n\
          keybinds (press ? in the app for the full list):\n\
@@ -37,7 +37,7 @@ fn main() -> ExitCode {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--licenses" => {
-                mdv::licenses::print();
+                vmd::licenses::print();
                 return ExitCode::SUCCESS;
             }
             "--trace" => {
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
             "-h" | "--help" => usage(),
             "-" => from_stdin = true,
             s if s.starts_with("--") => {
-                eprintln!("mdv: unknown flag: {s}");
+                eprintln!("vmd: unknown flag: {s}");
                 return ExitCode::from(2);
             }
             s => {
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
     let (source, title) = if from_stdin {
         let mut buf = String::new();
         if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-            eprintln!("mdv: stdin: {e}");
+            eprintln!("vmd: stdin: {e}");
             return ExitCode::from(1);
         }
         (buf, String::from("stdin"))
@@ -69,14 +69,14 @@ fn main() -> ExitCode {
         let p = match std::fs::canonicalize(&path) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("mdv: {path}: {e}");
+                eprintln!("vmd: {path}: {e}");
                 return ExitCode::from(1);
             }
         };
         let body = match std::fs::read_to_string(&p) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("mdv: {}: {e}", p.display());
+                eprintln!("vmd: {}: {e}", p.display());
                 return ExitCode::from(1);
             }
         };
@@ -86,12 +86,12 @@ fn main() -> ExitCode {
     };
 
     crate::trace!("source_read");
-    mdv::run(source, title);
+    vmd::run(source, title);
     ExitCode::SUCCESS
 }
 
 fn file_title(p: &PathBuf) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| String::from("mdv"))
+        .unwrap_or_else(|| String::from("vmd"))
 }

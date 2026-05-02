@@ -80,7 +80,7 @@ pub fn run(source: String, title: String) {
 }
 
 fn detect_dark() -> bool {
-    if let Ok(v) = std::env::var("MDV_THEME") {
+    if let Ok(v) = std::env::var("VMD_THEME") {
         return v == "dark";
     }
     true

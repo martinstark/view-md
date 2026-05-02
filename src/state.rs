@@ -20,7 +20,7 @@ fn state_path() -> Option<PathBuf> {
         let home = std::env::var("HOME").ok()?;
         PathBuf::from(home).join(".local/state")
     };
-    Some(base.join("mdv/prefs"))
+    Some(base.join("vmd/prefs"))
 }
 
 pub fn load() -> Prefs {
