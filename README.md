@@ -12,11 +12,22 @@ Minimal native markdown viewer. Single static binary, no webview, cold-launches 
 
     mdv file.md
     mdv -                   # read from stdin
-    mdv --licenses          # print bundled font licenses
+    mdv --licenses          # print mdv's license + bundled fonts + all third-party deps
     mdv --trace             # print timing breakdown
     MDV_TRACE=1 mdv file.md  # same as --trace
 
 In the app, `?` shows the full keybind list.
+
+## License
+
+mdv is dual-licensed under MIT or Apache-2.0; see `LICENSE-MIT` and
+`LICENSE-APACHE`. Run `mdv --licenses` (or read `THIRD-PARTY-LICENSES.md`)
+for the full text of every embedded dependency.
+
+To regenerate `THIRD-PARTY-LICENSES.md` after a `cargo update` or new dep:
+
+    cargo install cargo-about --features cli   # one-time
+    cargo about generate about.hbs > THIRD-PARTY-LICENSES.md
 
 ## Bundled fonts
 
