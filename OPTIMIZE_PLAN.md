@@ -213,9 +213,28 @@ visible work. Keep `Shaping::Advanced` everywhere.
 
 - **Bold-italic Inter and italic JBM**: rarely hit. Removing 2 fonts saves
   ~700KB binary and ~50µs load.
-- **`syntect default-fancy` → `default`**: the fancy regex engine is heavier;
-  standard `default` is enough for the bundled themes/syntaxes. Saves a bit
-  of cold-start in `syntaxes()`.
+- ✅ **`syntect default-fancy` → `default-onig`**: switched. The previous
+  description of this as "saves a bit of cold-start" was wildly wrong —
+  this turned out to be the single biggest syntect lever.
+
+  syntect 5.3 doesn't ship with the Rust `regex` crate as a backend
+  option; the choice is between `regex-fancy` (fancy-regex Rust crate)
+  and `regex-onig` (the Oniguruma C library, which is what the bundled
+  TextMate-style grammars were originally targeted at). Onig is
+  dramatically faster on these grammars in practice.
+
+  Measured (n=20 each) against post-(7) HEAD:
+
+  | doc | HEAD (fancy) | + onig | delta |
+  |---|---:|---:|---:|
+  | examples/test.md syntect_done | 30.73ms | 8.17ms | **−22.6ms (−74%)** |
+  | examples/test.md fully_rendered | 32.77ms | 19.74–20.62ms | **−12 to −13ms (−37–40%)** |
+  | README.md (no code) | 20.82ms | 20.81–21.17ms | unchanged |
+  | NATIVE_MD_VIEW.md | not measured | 33.54ms | n/a |
+
+  Cost: adds a C dependency (libonig built from the `onig_sys` crate).
+  Build environment now needs a working C compiler. Binary size
+  basically unchanged (~9.6MB).
 - **Smart punctuation**: a few µs of parser cost. Not worth it for the perf,
   but flag if you don't care about curly quotes.
 - **Ligatures (`mono_features`)**: shaping cost in code blocks. Disable to
