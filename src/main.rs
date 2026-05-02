@@ -4,6 +4,12 @@ use std::process::ExitCode;
 
 use vmd::trace;
 
+// cosmic-text + tiny-skia + syntect do many small allocs during shaping
+// and rasterization. mimalloc is consistently faster than glibc malloc on
+// these workloads and adds ~150KB to the binary.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn usage() -> ! {
   eprintln!(
     "vmd — minimal native markdown viewer\n\
