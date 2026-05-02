@@ -1,4 +1,4 @@
-use cosmic_text::{FontSystem, SwashCache, fontdb};
+use cosmic_text::{FeatureTag, FontFeatures, FontSystem, SwashCache, fontdb};
 
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 const INTER_BOLD: &[u8] = include_bytes!("../assets/Inter-Bold.ttf");
@@ -27,4 +27,21 @@ pub fn build_font_system() -> FontSystem {
 
 pub fn new_swash_cache() -> SwashCache {
     SwashCache::new()
+}
+
+/// Inter ss02: disambiguation set. Clarifies confusable glyphs (capital I,
+/// lowercase l, digit 1) without otherwise altering letter shapes.
+pub fn sans_features() -> FontFeatures {
+    let mut f = FontFeatures::new();
+    f.set(FeatureTag::new(b"ss02"), 1);
+    f
+}
+
+/// JetBrains Mono with contextual alternates and standard ligatures so
+/// programming digraphs (->, =>, !=, >=, ...) render as ligatures.
+pub fn mono_features() -> FontFeatures {
+    let mut f = FontFeatures::new();
+    f.set(FeatureTag::CONTEXTUAL_ALTERNATES, 1);
+    f.set(FeatureTag::STANDARD_LIGATURES, 1);
+    f
 }

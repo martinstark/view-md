@@ -1,7 +1,7 @@
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 
 use crate::doc::Inline;
-use crate::text::{FONT_MONO, FONT_SANS};
+use crate::text::{FONT_MONO, FONT_SANS, mono_features, sans_features};
 use crate::theme::Theme;
 
 #[derive(Clone, Debug)]
@@ -133,7 +133,7 @@ pub fn build_buffer(
 ) -> Buffer {
     let metrics = Metrics::new(font_size, line_height);
     let mut buf = Buffer::new(fs, metrics);
-    buf.set_size(fs, Some(width), None);
+    buf.set_size(Some(width), None);
 
     let default_attrs = base_attrs(base_color, bold_default);
     let spans: Vec<(&str, Attrs)> = runs
@@ -143,16 +143,19 @@ pub fn build_buffer(
         .collect();
 
     if spans.is_empty() {
-        buf.set_text(fs, "", default_attrs.clone(), Shaping::Advanced);
+        buf.set_text("", &default_attrs, Shaping::Advanced, None);
     } else {
-        buf.set_rich_text(fs, spans.into_iter(), default_attrs, Shaping::Advanced);
+        buf.set_rich_text(spans.into_iter(), &default_attrs, Shaping::Advanced, None);
     }
     buf.shape_until_scroll(fs, false);
     buf
 }
 
 fn base_attrs<'a>(color: Color, bold: bool) -> Attrs<'a> {
-    let mut a = Attrs::new().family(Family::Name(FONT_SANS)).color(color);
+    let mut a = Attrs::new()
+        .family(Family::Name(FONT_SANS))
+        .color(color)
+        .font_features(sans_features());
     if bold {
         a = a.weight(Weight::BOLD);
     }
@@ -160,8 +163,12 @@ fn base_attrs<'a>(color: Color, bold: bool) -> Attrs<'a> {
 }
 
 fn span_attrs<'a>(s: &'a StyleSpan, base_color: Color, bold_default: bool) -> Attrs<'a> {
-    let family = if s.mono { FONT_MONO } else { FONT_SANS };
-    let mut a = Attrs::new().family(Family::Name(family));
+    let mono = s.mono;
+    let family = if mono { FONT_MONO } else { FONT_SANS };
+    let features = if mono { mono_features() } else { sans_features() };
+    let mut a = Attrs::new()
+        .family(Family::Name(family))
+        .font_features(features);
     a = a.color(s.color.unwrap_or(base_color));
     if s.bold || bold_default {
         a = a.weight(Weight::BOLD);

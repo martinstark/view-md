@@ -623,19 +623,26 @@ pub fn draw_buffer(
     let ph = pixmap.height() as i32;
     let ox = ox as i32;
     let oy = oy as i32;
-    // cosmic-text/swash emit Mask pixels one at a time (w=h=1), so the
-    // closure runs per pixel. Hot path — keep it tight.
-    buf.draw(fs, swash, color, |x, y, _w, _h, c| {
-        if c.a() == 0 {
-            return;
+    // 0.19's Buffer::draw takes &mut self because it auto-shapes; we
+    // already shape at layout time, so iterate layout_runs directly with
+    // an immutable reference and rasterize each glyph through swash.
+    for run in buf.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            let physical = glyph.physical((0., run.line_y), 1.0);
+            let glyph_color = glyph.color_opt.unwrap_or(color);
+            swash.with_pixels(fs, physical.cache_key, glyph_color, |x, y, c| {
+                if c.a() == 0 {
+                    return;
+                }
+                let fx = physical.x + x + ox;
+                let fy = physical.y + y + oy;
+                if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
+                    return;
+                }
+                blend_pixel(pixmap, fx as u32, fy as u32, c);
+            });
         }
-        let fx = x + ox;
-        let fy = y + oy;
-        if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
-            return;
-        }
-        blend_pixel(pixmap, fx as u32, fy as u32, c);
-    });
+    }
 }
 
 #[inline]
