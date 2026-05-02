@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Minimal native markdown viewer"
 edition = "2021"
 rust-version = "1.77"
+license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "mdv"
