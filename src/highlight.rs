@@ -36,10 +36,12 @@ pub fn highlight(code: &str, lang: &str, dark: bool, enabled: bool) -> Vec<HlSpa
         None => return plain(code, dark),
     };
 
-    let syntax = if lang.is_empty() {
+    let resolved = alias_lang(lang);
+    let syntax = if resolved.is_empty() {
         ss.find_syntax_plain_text()
     } else {
-        ss.find_syntax_by_token(lang)
+        ss.find_syntax_by_token(resolved)
+            .or_else(|| ss.find_syntax_by_name(resolved))
             .unwrap_or_else(|| ss.find_syntax_plain_text())
     };
 
@@ -66,6 +68,21 @@ pub fn highlight(code: &str, lang: &str, dark: bool, enabled: bool) -> Vec<HlSpa
         }
     }
     out
+}
+
+// syntect's bundled defaults don't ship TypeScript or some common
+// shortnames. Map them to the closest available syntax.
+fn alias_lang(lang: &str) -> &str {
+    match lang.to_ascii_lowercase().as_str() {
+        "ts" | "tsx" | "typescript" | "jsx" => "javascript",
+        "sh" | "zsh" | "fish" => "bash",
+        "yml" => "yaml",
+        "md" => "markdown",
+        "rs" => "rust",
+        "py" => "python",
+        "rb" => "ruby",
+        _ => return lang,
+    }
 }
 
 fn plain(code: &str, dark: bool) -> Vec<HlSpan> {
