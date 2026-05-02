@@ -212,6 +212,43 @@ syntect precompute is the bottleneck. The fully_rendered ceiling
 won't drop further without parallelizing or batching the per-block
 syntect work itself.
 
+### 7b. Skip the request_redraw scheduling round-trip for first paint ✅ DONE
+**Saves ~1.5–3ms on first_present.**
+
+`App::resumed` previously called `window.request_redraw()` and waited
+for winit to fire `WindowEvent::RedrawRequested` before painting. That
+took ~1.5–2.3ms of pure scheduling delay on Wayland. New version just
+calls `self.redraw()` synchronously at the end of `resumed()`. The
+upgrade pass still flows through the normal event loop (the redraw
+function calls `request_redraw` itself if the upgrade isn't ready
+yet), so the runtime semantics are identical — only the first paint
+short-circuits the schedule.
+
+Plus a defensive in-line check in `redraw()`: if `highlight_ready` is
+already true at redraw entry (and we haven't promoted yet), do the
+in-place upgrade BEFORE painting. This collapses the
+placeholder-then-highlighted flash into a single highlighted paint
+when syntect happens to finish before we redraw — common on no-code
+docs.
+
+Measured (n=50 each):
+
+| metric | HEAD | + sync paint + ready check |
+|---|---:|---:|
+| test.md fp mean | 16.28ms | 14.68ms |
+| test.md fp min | 12.28ms | **10.64ms** |
+| test.md fully_rendered | 16.70ms | 16.52ms |
+| test.md fully min | 14.79ms | **12.85ms** |
+| README.md fp mean | 17.28ms | 16.03ms |
+| README.md fp min | 14.78ms | **12.58ms** |
+| README.md fully_rendered | 17.28ms | 16.03ms (= fp; single paint) |
+
+Best-case minimums are now ~10–13ms — within striking distance of
+the 8.3ms one-frame-at-120Hz target on individual runs but not yet
+consistently. The cost is primarily winit/Wayland init (~5ms before
+we even paint) and swash glyph rasterization (~3–4ms), neither of
+which we can easily eliminate.
+
 ### 8. Cache `LaidDoc` to disk keyed by (path, mtime, theme, zoom, dpi, width)
 For "open the same README repeatedly", deserializing a laid-out doc could be
 ≤2ms vs ~10ms re-layout. Higher complexity (cosmic-text Buffers aren't

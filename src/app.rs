@@ -168,7 +168,13 @@ impl ApplicationHandler for App {
     crate::trace!("layout_ready");
     self.window = Some(window.clone());
     self.surface = Some(surface);
-    window.request_redraw();
+    // Paint synchronously instead of going through
+    // window.request_redraw() → next event loop tick → RedrawRequested.
+    // Saves the ~2ms scheduling round-trip on the critical path.
+    // `redraw()` itself will request_redraw for the syntax-highlight
+    // upgrade if applicable, so the upgrade pass still flows through
+    // the normal event loop.
+    self.redraw();
   }
 
   fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -610,7 +616,14 @@ impl App {
   }
 
   fn redraw(&mut self) {
-    if self.upgrade_pending {
+    // Run the in-place code-block upgrade if it was scheduled OR if the
+    // syntect cache has just become ready. The latter check folds an
+    // upgrade INTO the current redraw whenever possible, avoiding the
+    // 2-frame placeholder→highlighted flash and the request_redraw
+    // round-trip for the upgrade pass.
+    let do_upgrade = self.upgrade_pending
+      || (!self.full_highlight && self.highlight_ready.load(Ordering::Acquire));
+    if do_upgrade {
       self.upgrade_pending = false;
       self.full_highlight = true;
       crate::trace!("relayout_full_highlight");
