@@ -6,9 +6,9 @@ Apache-2.0; see `LICENSE-MIT` and `LICENSE-APACHE` in the repository root.
 
 ## Overview
 
-- MIT License (260)
+- MIT License (265)
 - Apache License 2.0 (10)
-- BSD 3-Clause "New" or "Revised" License (2)
+- BSD 3-Clause "New" or "Revised" License (4)
 - Boost Software License 1.0 (2)
 - BSD 2-Clause "Simplified" License (1)
 - ISC License (1)
@@ -994,7 +994,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Used by:
 
 - tiny-skia-path 0.11.4 (https://github.com/RazrFalcon/tiny-skia/tree/master/path)
+- tiny-skia-path 0.12.0 (https://github.com/linebender/tiny-skia/tree/master/path)
 - tiny-skia 0.11.4 (https://github.com/RazrFalcon/tiny-skia)
+- tiny-skia 0.12.0 (https://github.com/linebender/tiny-skia)
 
 ```
 Copyright (c) 2011 Google Inc. All rights reserved.
@@ -1409,6 +1411,8 @@ Used by:
 - wayland-backend 0.3.15 (https://github.com/smithay/wayland-rs)
 - wayland-client 0.31.14 (https://github.com/smithay/wayland-rs)
 - wayland-cursor 0.31.14 (https://github.com/smithay/wayland-rs)
+- wayland-protocols-experimental 20250721.0.1 (https://github.com/smithay/wayland-rs)
+- wayland-protocols-misc 0.3.12 (https://github.com/smithay/wayland-rs)
 - wayland-protocols-plasma 0.3.12 (https://github.com/smithay/wayland-rs)
 - wayland-protocols-wlr 0.3.12 (https://github.com/smithay/wayland-rs)
 - wayland-protocols 0.32.12 (https://github.com/smithay/wayland-rs)
@@ -1571,7 +1575,6 @@ THE SOFTWARE.
 
 Used by:
 
-- png 0.17.16 (https://github.com/image-rs/image-png)
 - png 0.18.1 (https://github.com/image-rs/image-png)
 
 ```
@@ -2041,6 +2044,36 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
+- smithay-clipboard 0.7.3 (https://github.com/smithay/smithay-clipboard)
+
+```
+Copyright (c) 2018 Lucas Timmins & Victor Berger
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+
+## MIT License
+
+Used by:
+
 - smallvec 1.15.1 (https://github.com/servo/rust-smallvec)
 
 ```
@@ -2114,6 +2147,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 
 - smithay-client-toolkit 0.19.2 (https://github.com/smithay/client-toolkit)
+- smithay-client-toolkit 0.20.0 (https://github.com/smithay/client-toolkit)
 
 ```
 Copyright (c) 2018 Victor Berger
@@ -2143,6 +2177,7 @@ THE SOFTWARE.
 Used by:
 
 - calloop 0.13.0 (https://github.com/Smithay/calloop)
+- calloop 0.14.4 (https://github.com/Smithay/calloop)
 
 ```
 Copyright (c) 2018 Victor Berger
@@ -2651,6 +2686,7 @@ SOFTWARE.
 Used by:
 
 - calloop-wayland-source 0.3.0 (https://github.com/smithay/calloop-wayland-source)
+- calloop-wayland-source 0.4.1 (https://github.com/smithay/calloop-wayland-source)
 
 ```
 Copyright (c) 2023 Kirill Chibisov
@@ -3886,7 +3922,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- opener 0.7.2 (https://github.com/Seeker14491/opener)
+- opener 0.8.4 (https://github.com/Seeker14491/opener)
 - simdutf8 0.1.5 (https://github.com/rusticstuff/simdutf8)
 
 ```

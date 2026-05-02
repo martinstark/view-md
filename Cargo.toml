@@ -20,6 +20,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 arboard = "3"
 opener = "0.8"
+smithay-clipboard = "0.7"
+raw-window-handle = "0.6"
 
 [profile.release]
 codegen-units = 1

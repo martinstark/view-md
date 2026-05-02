@@ -5,16 +5,16 @@ pub static APP_START: OnceLock<Instant> = OnceLock::new();
 static ENABLED: OnceLock<bool> = OnceLock::new();
 
 pub fn init() {
-    let _ = APP_START.set(Instant::now());
-    let _ = ENABLED.set(std::env::var_os("VMD_TRACE").is_some());
+  let _ = APP_START.set(Instant::now());
+  let _ = ENABLED.set(std::env::var_os("VMD_TRACE").is_some());
 }
 
 pub fn enable() {
-    let _ = ENABLED.set(true);
+  let _ = ENABLED.set(true);
 }
 
 pub fn enabled() -> bool {
-    *ENABLED.get().unwrap_or(&false)
+  *ENABLED.get().unwrap_or(&false)
 }
 
 #[macro_export]
