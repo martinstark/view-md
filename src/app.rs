@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use cosmic_text::{Cursor, FontSystem};
+use cosmic_text::{Cursor, FontSystem, SwashCache};
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
 use tiny_skia::Pixmap;
@@ -20,6 +20,12 @@ use crate::layout::{LaidDoc, LaidKind, layout_parallel};
 use crate::paint::{Painter, pixmap_to_softbuffer};
 use crate::state::{self, Prefs};
 use crate::theme::Theme;
+
+/// Tuple returned by the speculative-layout background thread. Stored in
+/// `App.spec_handle` until `resumed()` joins it — moves the join from
+/// before `event_loop.run_app` to *after* `create_window`, so window/surface
+/// init runs in parallel with the bg layout+warm work (item T1.5).
+pub type SpecResult = (Doc, FontSystem, Vec<FontSystem>, LaidDoc, bool, SwashCache);
 
 pub const ZOOM_MIN: f32 = 0.5;
 pub const ZOOM_MAX: f32 = 3.0;
@@ -52,6 +58,11 @@ pub struct App {
   pub surface: Option<Surface<Rc<Window>, Rc<Window>>>,
   pub pixmap: Option<Pixmap>,
   pub laid: Option<LaidDoc>,
+  /// Speculative-layout join handle, held by the App until `resumed()`
+  /// has finished window+surface creation. `take()` + `join()` there
+  /// instead of in `lib.rs::run` so the bg layout+warm work overlaps
+  /// with main-thread Wayland init (item T1.5). `None` once consumed.
+  pub spec_handle: Option<std::thread::JoinHandle<SpecResult>>,
   pub painted_once: bool,
   pub full_highlight: bool,
   pub upgrade_pending: bool,
@@ -149,6 +160,22 @@ impl ApplicationHandler for App {
       .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
       .expect("resize");
     crate::trace!("surface_ready");
+
+    // Join the speculative-layout thread NOW (after window+surface init)
+    // instead of before `event_loop.run_app` (item T1.5). The bg thread's
+    // layout+warm work overlaps with create_window/clipboard/Context::new/
+    // Surface::new above (~1.5–2ms on this Wayland setup); main no longer
+    // pays the bg duration as a serial wait.
+    if let Some(handle) = self.spec_handle.take() {
+      let (doc, fs, layout_workers, laid, full_highlight, swash) =
+        handle.join().expect("speculative layout panicked");
+      crate::trace!("speculative_layout_joined");
+      self.doc = doc;
+      self.painter = Painter::with_cache(fs, swash);
+      self.layout_workers = layout_workers;
+      self.laid = Some(laid);
+      self.full_highlight = full_highlight;
+    }
 
     self.pixmap = Some(Pixmap::new(w, h).expect("pixmap"));
     let actual_scale = self.zoom * self.dpi_scale.max(1.0);

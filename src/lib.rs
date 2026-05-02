@@ -13,12 +13,12 @@ pub mod trace;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cosmic_text::{FontSystem, SwashCache};
+use cosmic_text::{FontSystem, SwashCache, fontdb};
 use winit::event_loop::EventLoop;
 
-use crate::app::App;
+use crate::app::{App, SpecResult};
 use crate::doc::Doc;
-use crate::layout::{LaidDoc, layout_parallel};
+use crate::layout::layout_parallel;
 use crate::paint::{Painter, warm_glyph_cache};
 use crate::theme::Theme;
 
@@ -108,7 +108,7 @@ pub fn run(source: String, title: String) {
   let ready_for_layout = highlight_ready.clone();
   let assumed_viewport_h = INITIAL_H * assumed_dpi_scale.max(1.0);
   let layout_handle = std::thread::spawn(
-    move || -> (Doc, FontSystem, Vec<FontSystem>, LaidDoc, bool, SwashCache) {
+    move || -> SpecResult {
       let mut fs = fs;
       let layout_workers = layout_workers;
       let full = ready_for_layout.load(Ordering::Acquire);
@@ -147,27 +147,29 @@ pub fn run(source: String, title: String) {
   let event_loop = EventLoop::new().expect("event loop");
   crate::trace!("event_loop_created");
 
-  let (doc, fs, layout_workers, laid, full_highlight, swash) =
-    layout_handle.join().expect("speculative layout panicked");
-  crate::trace!("speculative_layout_joined");
-
+  // Defer `layout_handle.join()` to inside `App::resumed` (item T1.5):
+  // the join now happens *after* create_window+surface init so bg layout
+  // overlaps with Wayland init on the main thread. App is constructed
+  // with cheap placeholders for the spec-derived fields; resumed() swaps
+  // them in once the join returns.
   let mut app = App {
     wayland_clipboard: None,
     title,
-    doc,
-    painter: Painter::with_cache(fs, swash),
-    layout_workers,
+    doc: Doc { blocks: Vec::new() },
+    painter: Painter::with_cache(empty_font_system(), SwashCache::new()),
+    layout_workers: Vec::new(),
     dark,
     zoom,
     scroll_y: 0.0,
     window: None,
     surface: None,
     pixmap: None,
-    laid: Some(laid),
+    laid: None,
+    spec_handle: Some(layout_handle),
     speculative_w: assumed_surface_w,
     speculative_scale: assumed_scale,
     painted_once: false,
-    full_highlight,
+    full_highlight: false,
     upgrade_pending: false,
     highlight_ready,
     help_visible: false,
@@ -179,6 +181,15 @@ pub fn run(source: String, title: String) {
     clipboard: None,
   };
   event_loop.run_app(&mut app).expect("run_app");
+}
+
+/// Cheap placeholder FontSystem — empty fontdb, no system scan. Used as
+/// the painter's initial font system before `resumed()` swaps in the real
+/// one returned from the spec thread. `fontdb::Database::new()` is a few
+/// µs; this avoids paying for `FontSystem::new()`'s system scan that we
+/// deliberately bypass everywhere else.
+fn empty_font_system() -> FontSystem {
+  FontSystem::new_with_locale_and_db("en-US".into(), fontdb::Database::new())
 }
 
 fn detect_dark() -> bool {
