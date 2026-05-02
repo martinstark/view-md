@@ -425,7 +425,7 @@ fn layout_code_block(
     let pad_y = CODE_PAD_Y * s;
     let inner_w = (w - pad_x * 2.0).max(80.0);
     let spans = highlight(code.trim_end_matches('\n'), lang, theme.is_dark, ctx.full_highlight);
-    let buf = build_highlighted_buffer(fs, &spans, CODE_FS * s, CODE_FS * s * CODE_LH_RATIO, inner_w);
+    let buf = build_highlighted_buffer(fs, spans.as_ref(), CODE_FS * s, CODE_FS * s * CODE_LH_RATIO, inner_w);
     let inner_h = buffer_height(&buf);
     let block_h = inner_h + pad_y * 2.0;
     let lang_label = if !lang.is_empty() {

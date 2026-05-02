@@ -1,7 +1,5 @@
 use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache};
-use tiny_skia::{
-    Color as SkColor, FillRule, Path, PathBuilder, Pixmap, PremultipliedColorU8, Rect, Transform,
-};
+use tiny_skia::{Color as SkColor, FillRule, Path, PathBuilder, Pixmap, Rect, Transform};
 
 use crate::doc::CellAlign;
 use crate::layout::{LaidBlock, LaidDoc, LaidKind, TableCellLayout, TableRowLayout, UnderlineRun};
@@ -623,27 +621,26 @@ pub fn draw_buffer(
 ) {
     let pw = pixmap.width() as i32;
     let ph = pixmap.height() as i32;
-    buf.draw(fs, swash, color, |x, y, w, h, c| {
-        if c.a() == 0 || w == 0 || h == 0 {
+    let ox = ox as i32;
+    let oy = oy as i32;
+    // cosmic-text/swash emit Mask pixels one at a time (w=h=1), so the
+    // closure runs per pixel. Hot path — keep it tight.
+    buf.draw(fs, swash, color, |x, y, _w, _h, c| {
+        if c.a() == 0 {
             return;
         }
-        let bx = x + ox as i32;
-        let by = y + oy as i32;
-        for dy in 0..h as i32 {
-            for dx in 0..w as i32 {
-                let fx = bx + dx;
-                let fy = by + dy;
-                if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
-                    continue;
-                }
-                blend_pixel(pixmap, fx as u32, fy as u32, c);
-            }
+        let fx = x + ox;
+        let fy = y + oy;
+        if fx < 0 || fy < 0 || fx >= pw || fy >= ph {
+            return;
         }
+        blend_pixel(pixmap, fx as u32, fy as u32, c);
     });
 }
 
+#[inline]
 fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, c: Color) {
-    let sa = c.a() as u16;
+    let sa = c.a() as u32;
     if sa == 0 {
         return;
     }
@@ -652,37 +649,38 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, c: Color) {
     let idx = ((y * w + x) * 4) as usize;
     let data = pixmap.data_mut();
 
-    let dst_r = data[idx] as u16;
-    let dst_g = data[idx + 1] as u16;
-    let dst_b = data[idx + 2] as u16;
-    let dst_a = data[idx + 3] as u16;
+    let dst_r = data[idx] as u32;
+    let dst_g = data[idx + 1] as u32;
+    let dst_b = data[idx + 2] as u32;
+    let dst_a = data[idx + 3];
 
-    let sr = c.r() as u16;
-    let sg = c.g() as u16;
-    let sb = c.b() as u16;
+    let sr = c.r() as u32;
+    let sg = c.g() as u32;
+    let sb = c.b() as u32;
     let inv = 255 - sa;
 
     // cosmic-text delivers straight color with `alpha` as coverage:
-    // src-over-dst with straight inputs is `src*a + dst*(1-a)`. The
-    // previous formula assumed pre-multiplied source and overflowed
-    // u8 on AA edges (e.g. blue channel of off-white text on dark bg
-    // wrapped to ~0, producing yellow fringing).
-    let r = ((sr * sa + dst_r * inv) / 255) as u8;
-    let g = ((sg * sa + dst_g * inv) / 255) as u8;
-    let b = ((sb * sa + dst_b * inv) / 255) as u8;
-    let a = (sa + (dst_a * inv) / 255).min(255) as u8;
+    // src-over-dst is `src*a + dst*(1-a)`. Our pixmap is premultiplied
+    // but the bg fill is opaque, so dst_r etc. read back as straight.
+    let r = (sr * sa + dst_r * inv) / 255;
+    let g = (sg * sa + dst_g * inv) / 255;
+    let b = (sb * sa + dst_b * inv) / 255;
 
-    let pre = PremultipliedColorU8::from_rgba(
-        ((r as u16 * a as u16) / 255) as u8,
-        ((g as u16 * a as u16) / 255) as u8,
-        ((b as u16 * a as u16) / 255) as u8,
-        a,
-    )
-    .unwrap_or_else(|| PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
-    data[idx] = pre.red();
-    data[idx + 1] = pre.green();
-    data[idx + 2] = pre.blue();
-    data[idx + 3] = pre.alpha();
+    if dst_a == 255 {
+        // Fast path (~99% of glyph pixels): dst opaque, result opaque,
+        // premultiplied storage == straight value.
+        data[idx] = r as u8;
+        data[idx + 1] = g as u8;
+        data[idx + 2] = b as u8;
+        return;
+    }
+
+    // General path: dst has partial alpha (overlay/help-card pixels).
+    let a = (sa + (dst_a as u32 * inv) / 255).min(255);
+    data[idx] = ((r * a) / 255) as u8;
+    data[idx + 1] = ((g * a) / 255) as u8;
+    data[idx + 2] = ((b * a) / 255) as u8;
+    data[idx + 3] = a as u8;
 }
 
 pub fn pixmap_to_softbuffer(pixmap: &Pixmap, buffer: &mut [u32]) {
