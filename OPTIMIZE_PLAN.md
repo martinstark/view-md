@@ -212,6 +212,37 @@ syntect precompute is the bottleneck. The fully_rendered ceiling
 won't drop further without parallelizing or batching the per-block
 syntect work itself.
 
+### 7c. Pre-warm the swash glyph cache on the speculative-layout thread ✅ DONE
+**Saves ~3.5ms in the paint phase (~70% of paint).**
+
+After speculative layout completes on its bg thread, walk every glyph
+in the visible viewport and call `swash.get_image(...)` to rasterize
+it into a fresh `SwashCache`. Return that cache through the spec-thread
+result and hand it to the `Painter` instead of `SwashCache::new()`.
+First paint's glyph lookups then all hit warm — no rasterization on
+the critical path.
+
+cache_key compatibility: same as item 2's cross-FontSystem story —
+all our FontSystems are built from identical font data in identical
+order, so fontdb's slotmap assigns identical font_ids, and a glyph
+cached on one fs's keys looks up cleanly on another's.
+
+Cost: spec thread now takes ~6ms instead of ~3ms (layout + warm
+sequentially), so main may wait ~2ms longer at the spec join. But the
+paint phase drops dramatically.
+
+Measured (n=50 each):
+
+| metric | HEAD | + cache pre-warm |
+|---|---:|---:|
+| test.md paint phase | 5.40ms | **1.85ms (−3.55ms, −66%)** |
+| test.md fp mean | 14.22ms | 13.19ms (−1.03ms) |
+| test.md fully mean | 16.15ms | **13.50ms (−2.65ms)** |
+| test.md fully min | 12.97ms | **10.75ms** |
+| README.md paint phase | 7.39ms | **1.96ms (−5.43ms, −73%)** |
+| README.md fp mean | 15.00ms | 12.19ms (−2.81ms) |
+| README.md fp min | 12.51ms | **11.11ms** |
+
 ### 7b. Skip the request_redraw scheduling round-trip for first paint ✅ DONE
 **Saves ~1.5–3ms on first_present.**
 

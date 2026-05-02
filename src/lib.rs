@@ -13,13 +13,13 @@ pub mod trace;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cosmic_text::FontSystem;
+use cosmic_text::{FontSystem, SwashCache};
 use winit::event_loop::EventLoop;
 
 use crate::app::App;
 use crate::doc::Doc;
 use crate::layout::{LaidDoc, layout_parallel};
-use crate::paint::Painter;
+use crate::paint::{Painter, warm_glyph_cache};
 use crate::theme::Theme;
 
 /// Number of background FontSystems used for parallel block shaping in
@@ -29,11 +29,13 @@ use crate::theme::Theme;
 /// modest and gets most of the gain on the typical 30–60-block doc.
 const N_LAYOUT_WORKERS: usize = 2;
 
-/// Initial window width (logical px) the speculative layout shapes
-/// against. Must match the value `App::resumed` requests via
+/// Initial window dimensions (logical px) the speculative layout shapes
+/// against, and the viewport extent used for swash glyph cache
+/// pre-warming. Must match the value `App::resumed` requests via
 /// `Window::default_attributes().with_inner_size(...)` so the
 /// speculative result can be reused without a relayout.
 const INITIAL_W: f32 = 920.0;
+const INITIAL_H: f32 = 1100.0;
 
 pub fn run(source: String, title: String) {
   crate::trace!("run_start");
@@ -104,8 +106,9 @@ pub fn run(source: String, title: String) {
   let assumed_scale = zoom * assumed_dpi_scale.max(1.0);
   let theme = Theme::select(dark);
   let ready_for_layout = highlight_ready.clone();
+  let assumed_viewport_h = INITIAL_H * assumed_dpi_scale.max(1.0);
   let layout_handle = std::thread::spawn(
-    move || -> (Doc, FontSystem, Vec<FontSystem>, LaidDoc, bool) {
+    move || -> (Doc, FontSystem, Vec<FontSystem>, LaidDoc, bool, SwashCache) {
       let mut fs = fs;
       let layout_workers = layout_workers;
       let full = ready_for_layout.load(Ordering::Acquire);
@@ -127,14 +130,24 @@ pub fn run(source: String, title: String) {
         assumed_scale,
       );
       crate::trace!("speculative_layout_done");
-      (doc, fs, layout_workers, laid, full)
+      // Pre-warm the swash glyph cache for the visible viewport while
+      // we're still on the bg thread. The painter would otherwise
+      // rasterize all these glyphs inline during the first paint
+      // (~3-4ms on test.md). The cache_keys we generate reference this
+      // fs's font_ids, which match the painter's because all
+      // FontSystems load identical fonts in identical order
+      // (deterministic slotmap IDs — same reasoning as item 2).
+      let mut swash = SwashCache::new();
+      warm_glyph_cache(&mut swash, &mut fs, &laid, assumed_viewport_h);
+      crate::trace!("speculative_warm_done");
+      (doc, fs, layout_workers, laid, full, swash)
     },
   );
 
   let event_loop = EventLoop::new().expect("event loop");
   crate::trace!("event_loop_created");
 
-  let (doc, fs, layout_workers, laid, full_highlight) =
+  let (doc, fs, layout_workers, laid, full_highlight, swash) =
     layout_handle.join().expect("speculative layout panicked");
   crate::trace!("speculative_layout_joined");
 
@@ -142,7 +155,7 @@ pub fn run(source: String, title: String) {
     wayland_clipboard: None,
     title,
     doc,
-    painter: Painter::new(fs),
+    painter: Painter::with_cache(fs, swash),
     layout_workers,
     dark,
     zoom,
