@@ -27,6 +27,6 @@ mimalloc = { version = "0.1", default-features = false }
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = 3
 panic = "abort"
 strip = true
