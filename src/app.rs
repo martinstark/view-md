@@ -195,15 +195,21 @@ impl ApplicationHandler for App {
     }
     crate::trace!("layout_ready");
 
-    // Wait briefly for the syntect precompute to finish before painting,
-    // so `redraw()`'s in-line "if highlight_ready, do upgrade now" check
-    // fires deterministically — single highlighted paint instead of a
-    // placeholder pass followed by a flash to highlighted ~2ms later.
-    // Bounded so a pathologically slow syntect (many languages × many
-    // grammars) doesn't push first paint indefinitely; in that case we
-    // fall through to placeholder paint + async upgrade, the same path
-    // we had before this wait existed.
-    if !self.highlight_ready.load(Ordering::Acquire) {
+    // The syntect_wait exists to avoid the placeholder→highlighted flash
+    // on first paint. That flash is only user-visible if a placeholder
+    // code block is in the initial viewport. If no code block is visible
+    // (or all visible code blocks are already fully highlighted from a
+    // fast-path spec), skip the wait — async upgrade still fires after
+    // first paint to fix code blocks below the fold for when the user
+    // scrolls.
+    let viewport_h = h as f32;
+    let placeholder_code_visible = !self.full_highlight
+      && self.laid.as_ref().map_or(false, |l| {
+        l.blocks
+          .iter()
+          .any(|b| b.y < viewport_h && matches!(b.kind, LaidKind::CodeBlock { .. }))
+      });
+    if placeholder_code_visible && !self.highlight_ready.load(Ordering::Acquire) {
       let deadline = Instant::now() + Duration::from_millis(5);
       while !self.highlight_ready.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::yield_now();
@@ -212,6 +218,8 @@ impl ApplicationHandler for App {
         "syntect_wait_done ready={}",
         self.highlight_ready.load(Ordering::Acquire)
       );
+    } else if !placeholder_code_visible {
+      crate::trace!("syntect_wait_skipped (no placeholder code in viewport)");
     }
 
     self.window = Some(window.clone());
