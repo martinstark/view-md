@@ -741,7 +741,16 @@ impl App {
         }
       }
     }
+    // Pin the currently-topmost block to the same screen position
+    // across the relayout, the same way resize handles it. Without
+    // this, any height change above the viewport (a new paragraph,
+    // an image's real dims arriving, a heading inserted) just clamps
+    // scroll_y and the user visually jumps.
+    let anchor = self.capture_scroll_anchor();
     self.relayout(self.current_surface_width());
+    if let Some(a) = anchor {
+      self.restore_scroll_anchor(a);
+    }
     self.request_redraw();
   }
 
