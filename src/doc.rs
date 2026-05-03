@@ -50,6 +50,46 @@ pub enum Block {
     src: String,
     alt: String,
   },
+  Alert {
+    kind: AlertKind,
+    blocks: Vec<Block>,
+  },
+}
+
+/// GitHub-flavored markdown alert kinds. Recognized in a blockquote
+/// whose first line is exactly `[!KIND]`. Spelled in capital letters in
+/// the source (`[!NOTE]`, `[!TIP]`, etc.), matching GFM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertKind {
+  Note,
+  Tip,
+  Important,
+  Warning,
+  Caution,
+}
+
+impl AlertKind {
+  fn from_marker(s: &str) -> Option<Self> {
+    match s {
+      "[!NOTE]" => Some(Self::Note),
+      "[!TIP]" => Some(Self::Tip),
+      "[!IMPORTANT]" => Some(Self::Important),
+      "[!WARNING]" => Some(Self::Warning),
+      "[!CAUTION]" => Some(Self::Caution),
+      _ => None,
+    }
+  }
+
+  /// Title-case label rendered above the alert body.
+  pub fn label(self) -> &'static str {
+    match self {
+      Self::Note => "Note",
+      Self::Tip => "Tip",
+      Self::Important => "Important",
+      Self::Warning => "Warning",
+      Self::Caution => "Caution",
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -92,6 +132,7 @@ pub fn parse(md: &str) -> Doc {
   }
   let mut blocks = b.finish();
   promote_image_paragraphs(&mut blocks);
+  promote_alerts(&mut blocks);
   Doc { blocks }
 }
 
@@ -102,17 +143,7 @@ pub fn parse(md: &str) -> Doc {
 /// with text continue to render as alt-text in their paragraph.
 fn promote_image_paragraphs(blocks: &mut Vec<Block>) {
   for block in blocks.iter_mut() {
-    if let Block::Quote(inner) = block {
-      promote_image_paragraphs(inner);
-    } else if let Block::List { items, .. } = block {
-      for item in items.iter_mut() {
-        promote_image_paragraphs(&mut item.blocks);
-      }
-    } else if let Block::Footnotes(defs) = block {
-      for def in defs.iter_mut() {
-        promote_image_paragraphs(&mut def.blocks);
-      }
-    }
+    walk_children_mut(block, promote_image_paragraphs);
   }
   for block in blocks.iter_mut() {
     if let Block::Paragraph(inlines) = block {
@@ -121,6 +152,82 @@ fn promote_image_paragraphs(blocks: &mut Vec<Block>) {
         *block = Block::Image { src, alt };
       }
     }
+  }
+}
+
+/// Promote `Block::Quote` to `Block::Alert` when its first line is
+/// `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, or `[!CAUTION]`.
+/// The marker line is stripped from the body; the rest renders inside
+/// the alert. Per GFM, the marker must be on its own line at the top
+/// of the quote — anything else is left as a regular quote.
+fn promote_alerts(blocks: &mut Vec<Block>) {
+  for block in blocks.iter_mut() {
+    walk_children_mut(block, promote_alerts);
+  }
+  for block in blocks.iter_mut() {
+    let Block::Quote(inner) = block else { continue };
+    let Some(kind) = detect_alert_marker(inner) else {
+      continue;
+    };
+    let mut body = std::mem::take(inner);
+    strip_alert_marker(&mut body);
+    *block = Block::Alert { kind, blocks: body };
+  }
+}
+
+fn walk_children_mut(block: &mut Block, f: fn(&mut Vec<Block>)) {
+  match block {
+    Block::Quote(inner) => f(inner),
+    Block::List { items, .. } => {
+      for item in items.iter_mut() {
+        f(&mut item.blocks);
+      }
+    }
+    Block::Footnotes(defs) => {
+      for def in defs.iter_mut() {
+        f(&mut def.blocks);
+      }
+    }
+    Block::Alert { blocks, .. } => f(blocks),
+    _ => {}
+  }
+}
+
+fn detect_alert_marker(blocks: &[Block]) -> Option<AlertKind> {
+  let first = blocks.first()?;
+  let Block::Paragraph(inlines) = first else {
+    return None;
+  };
+  // pulldown-cmark splits `[!NOTE]` into three Text inlines (`[`, `!NOTE`,
+  // `]`) because the brackets parse as link-reference syntax that fails to
+  // resolve. Concatenate every leading Text up to the first break and
+  // check the result. `Text("[!NOTE]")` (single-inline) also works.
+  let mut concat = String::new();
+  for inl in inlines {
+    match inl {
+      Inline::Text(t) => concat.push_str(t),
+      Inline::SoftBreak | Inline::HardBreak => break,
+      _ => return None,
+    }
+  }
+  AlertKind::from_marker(concat.trim())
+}
+
+fn strip_alert_marker(blocks: &mut Vec<Block>) {
+  let Some(Block::Paragraph(inlines)) = blocks.first_mut() else {
+    return;
+  };
+  // Drop leading Text inlines (the `[`, `!KIND`, `]` triple, or a single
+  // `Text("[!KIND]")` if pulldown-cmark ever changes its bracket parsing)
+  // and the soft/hard break that separated marker from body.
+  while matches!(inlines.first(), Some(Inline::Text(_))) {
+    inlines.remove(0);
+  }
+  if matches!(inlines.first(), Some(Inline::SoftBreak | Inline::HardBreak)) {
+    inlines.remove(0);
+  }
+  if inlines.is_empty() {
+    blocks.remove(0);
   }
 }
 

@@ -55,6 +55,23 @@ Mixed: ***bold italic***, **bold with `code` inside**, ~~strike with *italic*~~,
 > The best way out is always through.
 > — Robert Frost
 
+## Alerts
+
+> [!NOTE]
+> Useful information that users should know — even when skimming.
+
+> [!TIP]
+> Optional advice for getting more out of a feature.
+
+> [!IMPORTANT]
+> Crucial info users need to read carefully.
+
+> [!WARNING]
+> Urgent info — something might be about to break.
+
+> [!CAUTION]
+> Negative consequences if ignored, e.g. data loss.
+
 ## Table
 
 | lang | year | paradigm     |
