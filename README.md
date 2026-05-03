@@ -1,8 +1,8 @@
 # view md
 
-Speedy native markdown viewer. 
+Fast (<8.3 ms), native markdown viewer for Linux, OSX, Windows.
 
-Render a markdown file in a single frame at 120 fps (<8.3 ms).
+Render a markdown file with rich layout and syntax highlighting in a single frame.
 
 Vim-like keybinds. Light and dark themes.
 
