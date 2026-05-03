@@ -17,6 +17,7 @@ fn usage() -> ! {
          usage: vmd [flags] <file.md | ->\n\
          \n\
          flags:\n\
+         \x20\x20--watch        reload the file on disk changes\n\
          \x20\x20--licenses     print bundled font licenses (SIL OFL 1.1)\n\
          \x20\x20--trace        print timing breakdown (also: VMD_TRACE=1)\n\
          \x20\x20-h, --help     this message\n\
@@ -40,6 +41,7 @@ fn main() -> ExitCode {
 
   let mut path: Option<String> = None;
   let mut from_stdin = false;
+  let mut watch = false;
   for arg in std::env::args().skip(1) {
     match arg.as_str() {
       "--licenses" => {
@@ -48,6 +50,9 @@ fn main() -> ExitCode {
       }
       "--trace" => {
         trace::enable();
+      }
+      "--watch" => {
+        watch = true;
       }
       "-h" | "--help" => usage(),
       "-" => from_stdin = true,
@@ -64,13 +69,18 @@ fn main() -> ExitCode {
     }
   }
 
-  let (source, title) = if from_stdin {
+  if watch && from_stdin {
+    eprintln!("vmd: --watch requires a file path, not stdin");
+    return ExitCode::from(2);
+  }
+
+  let (source, title, watch_path) = if from_stdin {
     let mut buf = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
       eprintln!("vmd: stdin: {e}");
       return ExitCode::from(1);
     }
-    (buf, String::from("stdin"))
+    (buf, String::from("stdin"), None)
   } else if let Some(path) = path {
     let p = match std::fs::canonicalize(&path) {
       Ok(p) => p,
@@ -86,13 +96,14 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
       }
     };
-    (body, file_title(&p))
+    let title = file_title(&p);
+    (body, title, watch.then_some(p))
   } else {
     usage();
   };
 
   crate::trace!("source_read");
-  vmd::run(source, title);
+  vmd::run(source, title, watch_path);
   ExitCode::SUCCESS
 }
 
