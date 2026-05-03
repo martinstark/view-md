@@ -38,6 +38,11 @@ pub struct LaidDoc {
   pub content_w: f32,
   pub heading_ys: Vec<f32>,
   pub block_ys: Vec<f32>,
+  /// Indices into `blocks` for each heading. Each `Block::Heading` source
+  /// block produces exactly one `LaidKind::Text` LaidBlock, so this is a
+  /// 1:1 map onto `heading_ys` (same length, same order). Used by the
+  /// resize anchor logic to snap to a nearby heading instead of mid-text.
+  pub heading_block_idxs: Vec<usize>,
 }
 
 pub struct LaidBlock {
@@ -203,6 +208,7 @@ pub fn layout_parallel(
   });
 
   let mut heading_ys = Vec::new();
+  let mut heading_block_idxs = Vec::new();
   let mut block_ys = Vec::new();
   let mut y = 0.0_f32;
   let mut blocks: Vec<LaidBlock> = Vec::new();
@@ -219,6 +225,9 @@ pub fn layout_parallel(
     block_ys.push(y + pad_y);
     if matches!(doc.blocks[i], Block::Heading { .. }) {
       heading_ys.push(y + pad_y);
+      // Heading source blocks produce exactly one LaidBlock (a Text);
+      // the next push extends `blocks` from this index.
+      heading_block_idxs.push(blocks.len());
     }
     for lb in sub_blocks.iter_mut() {
       lb.y += y;
@@ -238,6 +247,7 @@ pub fn layout_parallel(
     content_w,
     heading_ys,
     block_ys,
+    heading_block_idxs,
   }
 }
 
