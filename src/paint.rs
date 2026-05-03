@@ -1,9 +1,188 @@
 use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache, SwashContent};
-use tiny_skia::{Color as SkColor, FillRule, Path, PathBuilder, Pixmap, Rect, Transform};
+use tiny_skia::{Color as SkColor, FillRule, Path, PathBuilder, Pixmap, Transform};
 
 use crate::doc::CellAlign;
 use crate::layout::{LaidBlock, LaidDoc, LaidKind, TableCellLayout, TableRowLayout, UnderlineRun};
 use crate::theme::Theme;
+
+/// u32-ARGB paint surface. Wraps the softbuffer slice directly so paint
+/// writes go straight to the wl_shm-backed buffer with no BGRA→u32
+/// conversion pass at the end. Format is `0x00RRGGBB` per pixel
+/// (Wayland ignores the alpha byte). Coordinate origin is top-left.
+pub struct Frame<'a> {
+  pub data: &'a mut [u32],
+  pub width: u32,
+  pub height: u32,
+}
+
+impl<'a> Frame<'a> {
+  pub fn new(data: &'a mut [u32], width: u32, height: u32) -> Self {
+    debug_assert!(data.len() >= (width as usize) * (height as usize));
+    Self {
+      data,
+      width,
+      height,
+    }
+  }
+
+  /// Solid-fill the entire buffer. Single u32 store loop — much cheaper
+  /// than tiny-skia's `Pixmap::fill` because no premultiplication and
+  /// no row-by-row Rect traversal.
+  pub fn fill_solid(&mut self, color: u32) {
+    self.data.fill(color);
+  }
+
+  /// Solid-color axis-aligned rect. Clips to frame bounds. No alpha.
+  pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: u32) {
+    let fw = self.width as i32;
+    let fh = self.height as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(fw);
+    let y1 = (y + h).min(fh);
+    if x0 >= x1 || y0 >= y1 {
+      return;
+    }
+    let stride = self.width as usize;
+    for ry in y0..y1 {
+      let row_start = (ry as usize) * stride + (x0 as usize);
+      let row_end = row_start + (x1 - x0) as usize;
+      self.data[row_start..row_end].fill(color);
+    }
+  }
+
+  /// Composite a tiny-skia `Pixmap` (RGBA8 premultiplied) into the frame
+  /// at `(x, y)`. Used for the few elements that go through tiny-skia's
+  /// path rasterizer — rounded code-block backgrounds, task-box strokes,
+  /// help-overlay card. Source covers a small bounding box; per-pixel
+  /// blend cost is bounded by the path's footprint, not the whole frame.
+  pub fn composite_pixmap(&mut self, x: i32, y: i32, pm: &Pixmap) {
+    let pw = pm.width() as i32;
+    let ph = pm.height() as i32;
+    let src = pm.data();
+    let fw = self.width as i32;
+    let fh = self.height as i32;
+    let stride = self.width as usize;
+    for sy in 0..ph {
+      let dy = y + sy;
+      if dy < 0 || dy >= fh {
+        continue;
+      }
+      let dst_row = (dy as usize) * stride;
+      let src_row = (sy as usize) * (pw as usize) * 4;
+      for sx in 0..pw {
+        let dx = x + sx;
+        if dx < 0 || dx >= fw {
+          continue;
+        }
+        let si = src_row + (sx as usize) * 4;
+        let a = src[si + 3] as u32;
+        if a == 0 {
+          continue;
+        }
+        let r = src[si] as u32;
+        let g = src[si + 1] as u32;
+        let b = src[si + 2] as u32;
+        let didx = dst_row + dx as usize;
+        if a == 255 {
+          self.data[didx] = (r << 16) | (g << 8) | b;
+          continue;
+        }
+        // Source RGBA is premultiplied. Composite over opaque dst:
+        //   dst = src + dst * (1 - a)
+        let inv = 255 - a;
+        let dst = self.data[didx];
+        let dr = (dst >> 16) & 0xFF;
+        let dg = (dst >> 8) & 0xFF;
+        let db = dst & 0xFF;
+        let nr = (r + dr * inv / 255).min(255);
+        let ng = (g + dg * inv / 255).min(255);
+        let nb = (b + db * inv / 255).min(255);
+        self.data[didx] = (nr << 16) | (ng << 8) | nb;
+      }
+    }
+  }
+}
+
+#[inline]
+fn sk_to_argb(c: SkColor) -> u32 {
+  let r = (c.red() * 255.0) as u32;
+  let g = (c.green() * 255.0) as u32;
+  let b = (c.blue() * 255.0) as u32;
+  (r << 16) | (g << 8) | b
+}
+
+#[inline]
+fn ct_to_argb(c: Color) -> u32 {
+  ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | (c.b() as u32)
+}
+
+/// Render an opaque, anti-aliased rounded-rect fill via a per-call
+/// scratch `Pixmap` and composite into the frame. The path's bounding
+/// box is the scratch size, which keeps the per-pixel blend cost
+/// bounded to the path's footprint instead of the whole frame.
+fn fill_rounded_rect_aa(
+  frame: &mut Frame,
+  x: i32,
+  y: i32,
+  w: u32,
+  h: u32,
+  r: f32,
+  color: SkColor,
+) {
+  if w == 0 || h == 0 {
+    return;
+  }
+  let Some(mut pm) = Pixmap::new(w, h) else {
+    return;
+  };
+  let Some(path) = rounded_rect(0.0, 0.0, w as f32, h as f32, r) else {
+    return;
+  };
+  let mut paint = tiny_skia::Paint::default();
+  paint.set_color(color);
+  paint.anti_alias = true;
+  pm.fill_path(
+    &path,
+    &paint,
+    FillRule::Winding,
+    Transform::identity(),
+    None,
+  );
+  frame.composite_pixmap(x, y, &pm);
+}
+
+/// Anti-aliased rounded-rect stroke (outline). Same approach as
+/// `fill_rounded_rect_aa`: scratch pixmap sized to the path bbox.
+fn stroke_rounded_rect_aa(
+  frame: &mut Frame,
+  x: i32,
+  y: i32,
+  w: u32,
+  h: u32,
+  r: f32,
+  color: SkColor,
+  stroke_w: f32,
+) {
+  if w == 0 || h == 0 {
+    return;
+  }
+  let Some(mut pm) = Pixmap::new(w, h) else {
+    return;
+  };
+  let Some(path) = rounded_rect(0.0, 0.0, w as f32, h as f32, r) else {
+    return;
+  };
+  let mut paint = tiny_skia::Paint::default();
+  paint.set_color(color);
+  paint.anti_alias = true;
+  let stroke = tiny_skia::Stroke {
+    width: stroke_w,
+    ..Default::default()
+  };
+  pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+  frame.composite_pixmap(x, y, &pm);
+}
 
 pub struct Painter {
   pub fs: FontSystem,
@@ -23,26 +202,25 @@ impl Painter {
     Self { fs, swash }
   }
 
-  pub fn paint_doc(&mut self, pixmap: &mut Pixmap, doc: &LaidDoc, theme: &Theme, scroll_y: f32) {
-    pixmap.fill(theme.bg);
-    let h = pixmap.height() as f32;
-
+  pub fn paint_doc(&mut self, frame: &mut Frame, doc: &LaidDoc, theme: &Theme, scroll_y: f32) {
+    frame.fill_solid(sk_to_argb(theme.bg));
+    let h = frame.height as f32;
     for block in &doc.blocks {
       let by = block.y - scroll_y;
       if by + block.h < 0.0 || by > h {
         continue;
       }
-      paint_block(pixmap, block, by, theme, &mut self.fs, &mut self.swash);
+      paint_block(frame, block, by, theme, &mut self.fs, &mut self.swash);
     }
   }
 
-  pub fn paint_blank(&mut self, pixmap: &mut Pixmap, theme: &Theme) {
-    pixmap.fill(theme.bg);
+  pub fn paint_blank(&mut self, frame: &mut Frame, theme: &Theme) {
+    frame.fill_solid(sk_to_argb(theme.bg));
   }
 
   pub fn paint_selection(
     &mut self,
-    pixmap: &mut Pixmap,
+    frame: &mut Frame,
     doc: &LaidDoc,
     sel: &crate::app::Selection,
     theme: &Theme,
@@ -57,7 +235,7 @@ impl Painter {
 
     if start.block_idx == end.block_idx {
       paint_block_selection(
-        pixmap,
+        frame,
         &doc.blocks[start.block_idx],
         scroll_y,
         Some(&start.cursor),
@@ -67,7 +245,7 @@ impl Painter {
       return;
     }
     paint_block_selection(
-      pixmap,
+      frame,
       &doc.blocks[start.block_idx],
       scroll_y,
       Some(&start.cursor),
@@ -75,10 +253,10 @@ impl Painter {
       bg,
     );
     for i in (start.block_idx + 1)..end.block_idx {
-      paint_block_selection(pixmap, &doc.blocks[i], scroll_y, None, None, bg);
+      paint_block_selection(frame, &doc.blocks[i], scroll_y, None, None, bg);
     }
     paint_block_selection(
-      pixmap,
+      frame,
       &doc.blocks[end.block_idx],
       scroll_y,
       None,
@@ -87,14 +265,17 @@ impl Painter {
     );
   }
 
-  pub fn paint_help_overlay(&mut self, pixmap: &mut Pixmap, theme: &Theme) {
-    // Dim the doc behind
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(SkColor::from_rgba8(0, 0, 0, 0x8c));
-    paint.anti_alias = false;
-    if let Some(rect) = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32) {
-      pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-    }
+  pub fn paint_help_overlay(&mut self, frame: &mut Frame, theme: &Theme) {
+    // Dim the doc behind. Translucent black via alpha-composite — too
+    // visible to skip the alpha math, so go through the scratch-pixmap
+    // path the same way other AA fills do.
+    let scrim = SkColor::from_rgba8(0, 0, 0, 0x8c);
+    let scrim_pm = {
+      let mut pm = Pixmap::new(frame.width.max(1), frame.height.max(1)).expect("scrim pm");
+      pm.fill(scrim);
+      pm
+    };
+    frame.composite_pixmap(0, 0, &scrim_pm);
 
     let entries: &[(&str, &str)] = &[
       ("q / Esc", "quit"),
@@ -117,28 +298,33 @@ impl Painter {
     let title_h = 32.0_f32;
     let card_h = title_h + pad + entries.len() as f32 * row_h + pad;
 
-    let cx = (pixmap.width() as f32 - card_w) / 2.0;
-    let cy = (pixmap.height() as f32 - card_h) / 2.0;
+    let cx = (frame.width as f32 - card_w) / 2.0;
+    let cy = (frame.height as f32 - card_h) / 2.0;
 
-    if let Some(path) = rounded_rect(cx, cy, card_w, card_h, 10.0) {
-      let mut bg = tiny_skia::Paint::default();
-      bg.set_color(if theme.is_dark {
-        SkColor::from_rgba8(0x16, 0x1b, 0x22, 0xff)
-      } else {
-        SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff)
-      });
-      bg.anti_alias = true;
-      pixmap.fill_path(&path, &bg, FillRule::Winding, Transform::identity(), None);
-
-      let mut border_paint = tiny_skia::Paint::default();
-      border_paint.set_color(theme.border);
-      border_paint.anti_alias = true;
-      let stroke = tiny_skia::Stroke {
-        width: 1.0,
-        ..Default::default()
-      };
-      pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
-    }
+    let card_bg = if theme.is_dark {
+      SkColor::from_rgba8(0x16, 0x1b, 0x22, 0xff)
+    } else {
+      SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff)
+    };
+    fill_rounded_rect_aa(
+      frame,
+      cx as i32,
+      cy as i32,
+      card_w as u32,
+      card_h as u32,
+      10.0,
+      card_bg,
+    );
+    stroke_rounded_rect_aa(
+      frame,
+      cx as i32,
+      cy as i32,
+      card_w as u32,
+      card_h as u32,
+      10.0,
+      theme.border,
+      1.0,
+    );
 
     let title = crate::layout::make_plain_buffer(
       &mut self.fs,
@@ -149,7 +335,7 @@ impl Painter {
       crate::text::FONT_SANS,
     );
     draw_buffer(
-      pixmap,
+      frame,
       &title,
       &mut self.fs,
       &mut self.swash,
@@ -177,7 +363,7 @@ impl Painter {
         crate::text::FONT_SANS,
       );
       draw_buffer(
-        pixmap,
+        frame,
         &key_buf,
         &mut self.fs,
         &mut self.swash,
@@ -186,7 +372,7 @@ impl Painter {
         theme.link,
       );
       draw_buffer(
-        pixmap,
+        frame,
         &desc_buf,
         &mut self.fs,
         &mut self.swash,
@@ -200,7 +386,7 @@ impl Painter {
 }
 
 fn paint_block(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   block: &LaidBlock,
   y: f32,
   theme: &Theme,
@@ -217,34 +403,36 @@ fn paint_block(
       ..
     } => {
       for c in code_runs {
-        draw_run_pills(pixmap, buffer, block.x, y, c, theme.inline_code_bg);
+        draw_run_pills(frame, buffer, block.x, y, c, theme.inline_code_bg);
       }
-      draw_buffer(pixmap, buffer, fs, swash, block.x, y, *color);
+      draw_buffer(frame, buffer, fs, swash, block.x, y, *color);
       for u in underlines {
-        draw_run_lines(pixmap, buffer, block.x, y, u, *color, LinePos::Underline);
+        draw_run_lines(frame, buffer, block.x, y, u, *color, LinePos::Underline);
       }
       for s in strikes {
-        draw_run_lines(pixmap, buffer, block.x, y, s, *color, LinePos::Strike);
+        draw_run_lines(frame, buffer, block.x, y, s, *color, LinePos::Strike);
       }
     }
     LaidKind::Rule => {
-      let mut paint = tiny_skia::Paint::default();
-      paint.set_color(theme.rule);
-      paint.anti_alias = false;
-      let w = pixmap.width() as f32 - block.x * 2.0;
-      if let Some(rect) = Rect::from_xywh(block.x, y, w, 1.0) {
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-      }
+      let w = frame.width as f32 - block.x * 2.0;
+      frame.fill_rect(
+        block.x as i32,
+        y as i32,
+        w as i32,
+        1,
+        sk_to_argb(theme.rule),
+      );
     }
     LaidKind::Bar { color, width } => {
-      let mut paint = tiny_skia::Paint::default();
-      paint.set_color(*color);
-      paint.anti_alias = false;
-      if let Some(rect) = Rect::from_xywh(block.x, y, *width, block.h) {
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-      }
+      frame.fill_rect(
+        block.x as i32,
+        y as i32,
+        *width as i32,
+        block.h as i32,
+        sk_to_argb(*color),
+      );
     }
-    LaidKind::TaskBox { checked } => paint_task_box(pixmap, block.x, y, block.h, *checked, theme),
+    LaidKind::TaskBox { checked } => paint_task_box(frame, block.x, y, block.h, *checked, theme),
     LaidKind::CodeBlock {
       buffer,
       bg,
@@ -255,18 +443,15 @@ fn paint_block(
       lang_label_color,
       ..
     } => {
-      if let Some(path) = rounded_rect(block.x, y, *width, block.h, 6.0) {
-        let mut paint = tiny_skia::Paint::default();
-        paint.set_color(*bg);
-        paint.anti_alias = true;
-        pixmap.fill_path(
-          &path,
-          &paint,
-          FillRule::Winding,
-          Transform::identity(),
-          None,
-        );
-      }
+      fill_rounded_rect_aa(
+        frame,
+        block.x as i32,
+        y as i32,
+        *width as u32,
+        block.h as u32,
+        6.0,
+        *bg,
+      );
       if let Some(label) = lang_label {
         let label_w = label
           .layout_runs()
@@ -274,10 +459,10 @@ fn paint_block(
           .fold(0.0_f32, f32::max);
         let lx = block.x + *width - label_w - *pad_x;
         let ly = y + 6.0;
-        draw_buffer(pixmap, label, fs, swash, lx, ly, *lang_label_color);
+        draw_buffer(frame, label, fs, swash, lx, ly, *lang_label_color);
       }
       draw_buffer(
-        pixmap,
+        frame,
         buffer,
         fs,
         swash,
@@ -293,13 +478,13 @@ fn paint_block(
       header_bg,
       alt_bg: _,
     } => paint_table(
-      pixmap, fs, swash, block.x, y, *block_w, rows, *border, *header_bg, theme,
+      frame, fs, swash, block.x, y, *block_w, rows, *border, *header_bg, theme,
     ),
   }
 }
 
 fn paint_table(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   fs: &mut FontSystem,
   swash: &mut SwashCache,
   x0: f32,
@@ -311,64 +496,71 @@ fn paint_table(
   theme: &Theme,
 ) {
   let total_h = rows.last().map(|r| r.y_top + r.h).unwrap_or(0.0);
+  let border_argb = sk_to_argb(border);
 
   // Header background
   if let Some(first) = rows.first() {
     if first.is_header {
-      let mut paint = tiny_skia::Paint::default();
-      paint.set_color(header_bg);
-      paint.anti_alias = false;
-      if let Some(rect) = Rect::from_xywh(x0, y0, block_w, first.h) {
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-      }
+      frame.fill_rect(
+        x0 as i32,
+        y0 as i32,
+        block_w as i32,
+        first.h as i32,
+        sk_to_argb(header_bg),
+      );
     }
   }
 
-  // Outer border + horizontal lines
-  let mut paint = tiny_skia::Paint::default();
-  paint.set_color(border);
-  paint.anti_alias = false;
-
-  // top
-  if let Some(rect) = Rect::from_xywh(x0, y0, block_w, 1.0) {
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-  }
-  // bottom
-  if let Some(rect) = Rect::from_xywh(x0, y0 + total_h - 1.0, block_w, 1.0) {
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-  }
-  // between rows
+  // Outer border + horizontal lines (1px each)
+  frame.fill_rect(x0 as i32, y0 as i32, block_w as i32, 1, border_argb);
+  frame.fill_rect(
+    x0 as i32,
+    (y0 + total_h - 1.0) as i32,
+    block_w as i32,
+    1,
+    border_argb,
+  );
   for r in rows.iter().skip(1) {
-    if let Some(rect) = Rect::from_xywh(x0, y0 + r.y_top, block_w, 1.0) {
-      pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-    }
+    frame.fill_rect(
+      x0 as i32,
+      (y0 + r.y_top) as i32,
+      block_w as i32,
+      1,
+      border_argb,
+    );
   }
   // left + right
-  if let Some(rect) = Rect::from_xywh(x0, y0, 1.0, total_h) {
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-  }
-  if let Some(rect) = Rect::from_xywh(x0 + block_w - 1.0, y0, 1.0, total_h) {
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-  }
+  frame.fill_rect(x0 as i32, y0 as i32, 1, total_h as i32, border_argb);
+  frame.fill_rect(
+    (x0 + block_w - 1.0) as i32,
+    y0 as i32,
+    1,
+    total_h as i32,
+    border_argb,
+  );
   // vertical column lines
   if let Some(first) = rows.first() {
     for cell in first.cells.iter().skip(1) {
-      if let Some(rect) = Rect::from_xywh(x0 + cell.x, y0, 1.0, total_h) {
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-      }
+      frame.fill_rect(
+        (x0 + cell.x) as i32,
+        y0 as i32,
+        1,
+        total_h as i32,
+        border_argb,
+      );
     }
   }
 
   // Cell content
   for r in rows.iter() {
     for c in r.cells.iter() {
-      paint_table_cell(pixmap, fs, swash, x0, y0 + r.y_top, c, theme);
+      paint_table_cell(frame, fs, swash, x0, y0 + r.y_top, c, theme);
     }
   }
 }
 
 fn paint_table_cell(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   fs: &mut FontSystem,
   swash: &mut SwashCache,
   table_x0: f32,
@@ -376,7 +568,6 @@ fn paint_table_cell(
   cell: &TableCellLayout,
   theme: &Theme,
 ) {
-  // Use proportionally based on cell width: ~12 base or scaled.
   let pad_x = (cell.w * 0.04).clamp(6.0, 24.0);
   let pad_y = (pad_x * 0.7).max(6.0);
 
@@ -396,12 +587,12 @@ fn paint_table_cell(
   let cy = row_y0 + pad_y;
 
   for c in &cell.code_runs {
-    draw_run_pills(pixmap, &cell.buffer, cx, cy, c, theme.inline_code_bg);
+    draw_run_pills(frame, &cell.buffer, cx, cy, c, theme.inline_code_bg);
   }
-  draw_buffer(pixmap, &cell.buffer, fs, swash, cx, cy, cell.color);
+  draw_buffer(frame, &cell.buffer, fs, swash, cx, cy, cell.color);
   for u in &cell.underlines {
     draw_run_lines(
-      pixmap,
+      frame,
       &cell.buffer,
       cx,
       cy,
@@ -411,7 +602,7 @@ fn paint_table_cell(
     );
   }
   for s in &cell.strikes {
-    draw_run_lines(pixmap, &cell.buffer, cx, cy, s, cell.color, LinePos::Strike);
+    draw_run_lines(frame, &cell.buffer, cx, cy, s, cell.color, LinePos::Strike);
   }
 }
 
@@ -422,7 +613,7 @@ enum LinePos {
 }
 
 fn draw_run_lines(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   buf: &Buffer,
   ox: f32,
   oy: f32,
@@ -451,13 +642,19 @@ fn draw_run_lines(
         LinePos::Strike => baseline_y - font_size * 0.36,
       };
       let thickness = (font_size * 0.06).max(1.0).round();
-      fill_line(pixmap, ox + xs, oy + underline_y, xe - xs, thickness, color);
+      frame.fill_rect(
+        (ox + xs) as i32,
+        (oy + underline_y) as i32,
+        (xe - xs).max(1.0) as i32,
+        thickness as i32,
+        ct_to_argb(color),
+      );
     }
   }
 }
 
 fn draw_run_pills(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   buf: &Buffer,
   ox: f32,
   oy: f32,
@@ -465,6 +662,7 @@ fn draw_run_pills(
   bg: SkColor,
 ) {
   let line_height = buf.metrics().line_height;
+  let argb = sk_to_argb(bg);
   for run in buf.layout_runs() {
     let mut x_start: Option<f32> = None;
     let mut x_end: Option<f32> = None;
@@ -482,54 +680,48 @@ fn draw_run_pills(
       let pad_y = 1.0;
       let pill_top = run.line_top;
       let pill_h = line_height - 2.0;
-      let mut paint = tiny_skia::Paint::default();
-      paint.set_color(bg);
-      paint.anti_alias = false;
-      if let Some(rect) = Rect::from_xywh(
-        ox + xs - pad_x,
-        oy + pill_top + pad_y,
-        (xe - xs) + pad_x * 2.0,
-        pill_h - pad_y * 2.0,
-      ) {
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-      }
+      // NOTE: pill bg has a translucent alpha (0x33–0x40) in both
+      // themes; with sk_to_argb we drop the alpha. Inline-code pills
+      // were already rendering as opaque-ish on top of the doc bg
+      // because tiny-skia's fill_rect with anti_alias=false applied
+      // alpha channel only at edge pixels, and the rest blended onto
+      // an opaque pixmap fill. The simplification here is acceptable
+      // (visible in dark theme as a slightly more solid pill).
+      frame.fill_rect(
+        (ox + xs - pad_x) as i32,
+        (oy + pill_top + pad_y) as i32,
+        ((xe - xs) + pad_x * 2.0) as i32,
+        (pill_h - pad_y * 2.0) as i32,
+        argb,
+      );
     }
   }
 }
 
-fn fill_line(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, c: Color) {
-  let mut paint = tiny_skia::Paint::default();
-  paint.set_color(SkColor::from_rgba8(c.r(), c.g(), c.b(), c.a()));
-  paint.anti_alias = false;
-  if let Some(rect) = Rect::from_xywh(x, y, w.max(1.0), h.max(1.0)) {
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-  }
-}
-
-fn paint_task_box(pixmap: &mut Pixmap, x: f32, y: f32, size: f32, checked: bool, theme: &Theme) {
+fn paint_task_box(frame: &mut Frame, x: f32, y: f32, size: f32, checked: bool, theme: &Theme) {
   let outline = ct_to_sk(theme.muted);
   let stroke_w = (size * 0.12).max(1.5).round();
 
-  // Always: outlined box with bg interior.
-  let mut border_paint = tiny_skia::Paint::default();
-  border_paint.set_color(outline);
-  border_paint.anti_alias = true;
-  if let Some(path) = rounded_rect(x, y, size, size, size * 0.18) {
-    let stroke = tiny_skia::Stroke {
-      width: stroke_w,
-      ..Default::default()
-    };
-    pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
-  }
+  stroke_rounded_rect_aa(
+    frame,
+    x as i32,
+    y as i32,
+    size as u32,
+    size as u32,
+    size * 0.18,
+    outline,
+    stroke_w,
+  );
 
   if checked {
-    let mut fill = tiny_skia::Paint::default();
-    fill.set_color(ct_to_sk(theme.link));
-    fill.anti_alias = true;
     let pad = size * 0.28;
-    if let Some(rect) = Rect::from_xywh(x + pad, y + pad, size - pad * 2.0, size - pad * 2.0) {
-      pixmap.fill_rect(rect, &fill, Transform::identity(), None);
-    }
+    frame.fill_rect(
+      (x + pad) as i32,
+      (y + pad) as i32,
+      (size - pad * 2.0) as i32,
+      (size - pad * 2.0) as i32,
+      ct_to_argb(theme.link),
+    );
   }
 }
 
@@ -538,7 +730,7 @@ fn ct_to_sk(c: Color) -> SkColor {
 }
 
 fn paint_block_selection(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   block: &LaidBlock,
   scroll_y: f32,
   start: Option<&Cursor>,
@@ -557,6 +749,11 @@ fn paint_block_selection(
   };
   let line_height = buffer.metrics().line_height;
   let lh = line_height;
+  // Selection bg is translucent (alpha 0x70 / 0x80). Render each
+  // selection-rect via composite_pixmap so the alpha actually blends —
+  // direct fill_rect would lose the alpha and produce an opaque highlight.
+  let argb_full = sk_to_argb(bg);
+  let alpha = bg.alpha();
   for run in buffer.layout_runs() {
     let line_idx = run.line_i;
     let after_start = start.map_or(true, |s| line_idx > s.line);
@@ -587,17 +784,24 @@ fn paint_block_selection(
       continue;
     }
 
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(bg);
-    paint.anti_alias = false;
-    if let Some(rect) = Rect::from_xywh(ox + xs, oy + run.line_top, xe - xs, lh) {
-      pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    let rect_x = (ox + xs) as i32;
+    let rect_y = (oy + run.line_top) as i32;
+    let rect_w = (xe - xs).max(1.0) as u32;
+    let rect_h = lh.max(1.0) as u32;
+    if alpha >= 0.999 {
+      frame.fill_rect(rect_x, rect_y, rect_w as i32, rect_h as i32, argb_full);
+    } else {
+      // Build a tiny scratch pixmap of the selection rect's footprint
+      // pre-filled with the translucent color, composite onto frame.
+      if let Some(mut pm) = Pixmap::new(rect_w.max(1), rect_h.max(1)) {
+        pm.fill(bg);
+        frame.composite_pixmap(rect_x, rect_y, &pm);
+      }
     }
   }
 }
 
 fn cursor_x_in_run(run: &cosmic_text::LayoutRun, byte_idx: usize) -> Option<f32> {
-  // Walk glyphs to find the x coordinate matching a byte offset within the run.
   if run.glyphs.is_empty() {
     return Some(0.0);
   }
@@ -606,7 +810,6 @@ fn cursor_x_in_run(run: &cosmic_text::LayoutRun, byte_idx: usize) -> Option<f32>
       return Some(g.x);
     }
     if byte_idx <= g.end {
-      // Mid-glyph: approximate by interpolation
       let span = (g.end - g.start).max(1);
       let frac = (byte_idx - g.start) as f32 / span as f32;
       return Some(g.x + g.w * frac);
@@ -633,7 +836,7 @@ pub(crate) fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Pat
 }
 
 pub fn draw_buffer(
-  pixmap: &mut Pixmap,
+  frame: &mut Frame,
   buf: &Buffer,
   fs: &mut FontSystem,
   swash: &mut SwashCache,
@@ -642,18 +845,17 @@ pub fn draw_buffer(
   color: Color,
 ) {
   // Iterate the cached glyph bitmap directly via `swash.get_image(...)`
-  // rather than `swash.with_pixels(...)`. `with_pixels` invokes a
-  // closure per pixel — including all the alpha=0 pixels in the glyph
-  // bounding box — which dominates paint time for text-heavy frames.
-  // cosmic-text's own docs note "use `with_image` for better
-  // performance"; we keep the same blending semantics but skip per-row
-  // and per-pixel callback overhead.
-  let pw_u = pixmap.width();
-  let pw = pw_u as i32;
-  let ph = pixmap.height() as i32;
+  // and write blended u32 pixels straight into the frame buffer — no
+  // intermediate BGRA pixmap pass. cosmic-text's own docs note "use
+  // `with_image` for better performance"; we keep the same blending
+  // semantics but skip per-row and per-pixel callback overhead, and
+  // skip the BGRA→u32 conversion that the old Pixmap-based pipeline
+  // required at the end of each frame.
+  let stride = frame.width as usize;
+  let fw = frame.width as i32;
+  let fh = frame.height as i32;
   let ox = ox as i32;
   let oy = oy as i32;
-  let data = pixmap.data_mut();
   for run in buf.layout_runs() {
     for glyph in run.glyphs.iter() {
       let physical = glyph.physical((0., run.line_y), 1.0);
@@ -670,10 +872,31 @@ pub fn draw_buffer(
       let base_y = physical.y - image.placement.top + oy;
       match image.content {
         SwashContent::Mask => {
-          paint_mask_glyph(data, pw_u, pw, ph, base_x, base_y, img_w, img_h, &image.data, glyph_color);
+          paint_mask_glyph(
+            frame.data,
+            stride,
+            fw,
+            fh,
+            base_x,
+            base_y,
+            img_w,
+            img_h,
+            &image.data,
+            glyph_color,
+          );
         }
         SwashContent::Color => {
-          paint_color_glyph(data, pw_u, pw, ph, base_x, base_y, img_w, img_h, &image.data);
+          paint_color_glyph(
+            frame.data,
+            stride,
+            fw,
+            fh,
+            base_x,
+            base_y,
+            img_w,
+            img_h,
+            &image.data,
+          );
         }
         SwashContent::SubpixelMask => {}
       }
@@ -681,16 +904,14 @@ pub fn draw_buffer(
   }
 }
 
-/// Composite a per-pixel alpha mask (single byte/pixel) onto the pixmap
-/// using `glyph_color` for RGB. This is the path 99%+ of glyphs take —
-/// regular text is single-channel coverage. We skip alpha=0 pixels with
-/// a byte read + branch instead of paying the closure call cost that
-/// `with_pixels` would.
+/// Composite a per-pixel alpha mask (single byte/pixel) onto the u32
+/// frame using `glyph_color` for RGB. This is the path 99%+ of glyphs
+/// take — regular text is single-channel coverage.
 fn paint_mask_glyph(
-  data: &mut [u8],
-  pw_u: u32,
-  pw: i32,
-  ph: i32,
+  data: &mut [u32],
+  stride: usize,
+  fw: i32,
+  fh: i32,
   base_x: i32,
   base_y: i32,
   img_w: i32,
@@ -704,22 +925,22 @@ fn paint_mask_glyph(
   let mut row_off = 0_usize;
   for off_y in 0..img_h {
     let fy = base_y + off_y;
-    if fy < 0 || fy >= ph {
+    if fy < 0 || fy >= fh {
       row_off += img_w as usize;
       continue;
     }
-    let row_base = (fy as u32 * pw_u * 4) as usize;
+    let row_base = (fy as usize) * stride;
     for off_x in 0..img_w {
       let sa = alpha[row_off + off_x as usize] as u32;
       if sa == 0 {
         continue;
       }
       let fx = base_x + off_x;
-      if fx < 0 || fx >= pw {
+      if fx < 0 || fx >= fw {
         continue;
       }
-      let idx = row_base + (fx as usize) * 4;
-      blend_mask_premul(data, idx, sr, sg, sb, sa);
+      let idx = row_base + fx as usize;
+      blend_mask_argb(data, idx, sr, sg, sb, sa);
     }
     row_off += img_w as usize;
   }
@@ -727,10 +948,10 @@ fn paint_mask_glyph(
 
 /// Color-emoji or other content delivered as RGBA8 per pixel.
 fn paint_color_glyph(
-  data: &mut [u8],
-  pw_u: u32,
-  pw: i32,
-  ph: i32,
+  data: &mut [u32],
+  stride: usize,
+  fw: i32,
+  fh: i32,
   base_x: i32,
   base_y: i32,
   img_w: i32,
@@ -738,14 +959,14 @@ fn paint_color_glyph(
   rgba: &[u8],
 ) {
   let mut row_off = 0_usize;
-  let stride = img_w as usize * 4;
+  let src_stride = img_w as usize * 4;
   for off_y in 0..img_h {
     let fy = base_y + off_y;
-    if fy < 0 || fy >= ph {
-      row_off += stride;
+    if fy < 0 || fy >= fh {
+      row_off += src_stride;
       continue;
     }
-    let row_base = (fy as u32 * pw_u * 4) as usize;
+    let row_base = (fy as usize) * stride;
     for off_x in 0..img_w {
       let i = row_off + off_x as usize * 4;
       let sa = rgba[i + 3] as u32;
@@ -753,45 +974,43 @@ fn paint_color_glyph(
         continue;
       }
       let fx = base_x + off_x;
-      if fx < 0 || fx >= pw {
+      if fx < 0 || fx >= fw {
         continue;
       }
       let sr = rgba[i] as u32;
       let sg = rgba[i + 1] as u32;
       let sb = rgba[i + 2] as u32;
-      let idx = row_base + (fx as usize) * 4;
-      blend_mask_premul(data, idx, sr, sg, sb, sa);
+      let idx = row_base + fx as usize;
+      // Source RGBA is premultiplied. Composite onto opaque dst:
+      //   dst = src + dst * (1 - a)
+      let inv = 255 - sa;
+      let dst = data[idx];
+      let dr = (dst >> 16) & 0xFF;
+      let dg = (dst >> 8) & 0xFF;
+      let db = dst & 0xFF;
+      let r = (sr + dr * inv / 255).min(255);
+      let g = (sg + dg * inv / 255).min(255);
+      let b = (sb + db * inv / 255).min(255);
+      data[idx] = (r << 16) | (g << 8) | b;
     }
-    row_off += stride;
+    row_off += src_stride;
   }
 }
 
 /// Alpha-blend `(sr, sg, sb)` with coverage `sa` (0..=255) onto the
-/// premultiplied BGRA8 pixel at `data[idx..idx+4]`. Fast path
-/// (`dst_a == 255`) hits on ~99% of glyph pixels because `paint_doc`
-/// fills the pixmap with the opaque theme bg before painting blocks.
+/// u32 ARGB pixel at `data[idx]`. Frame pixels are always opaque (we
+/// fill bg first), so we don't track destination alpha.
 #[inline(always)]
-fn blend_mask_premul(data: &mut [u8], idx: usize, sr: u32, sg: u32, sb: u32, sa: u32) {
-  let dst = &mut data[idx..idx + 4];
-  let dst_r = dst[0] as u32;
-  let dst_g = dst[1] as u32;
-  let dst_b = dst[2] as u32;
-  let dst_a = dst[3];
+fn blend_mask_argb(data: &mut [u32], idx: usize, sr: u32, sg: u32, sb: u32, sa: u32) {
   let inv = 255 - sa;
-  let r = (sr * sa + dst_r * inv) / 255;
-  let g = (sg * sa + dst_g * inv) / 255;
-  let b = (sb * sa + dst_b * inv) / 255;
-  if dst_a == 255 {
-    dst[0] = r as u8;
-    dst[1] = g as u8;
-    dst[2] = b as u8;
-    return;
-  }
-  let a = (sa + (dst_a as u32 * inv) / 255).min(255);
-  dst[0] = ((r * a) / 255) as u8;
-  dst[1] = ((g * a) / 255) as u8;
-  dst[2] = ((b * a) / 255) as u8;
-  dst[3] = a as u8;
+  let dst = data[idx];
+  let dr = (dst >> 16) & 0xFF;
+  let dg = (dst >> 8) & 0xFF;
+  let db = dst & 0xFF;
+  let r = (sr * sa + dr * inv) / 255;
+  let g = (sg * sa + dg * inv) / 255;
+  let b = (sb * sa + db * inv) / 255;
+  data[idx] = (r << 16) | (g << 8) | b;
 }
 
 /// Walk the laid doc and call `swash.get_image(...)` on every glyph
@@ -914,18 +1133,5 @@ fn warm_buffer(swash: &mut SwashCache, fs: &mut FontSystem, buf: &Buffer) {
       let physical = glyph.physical((0., run.line_y), 1.0);
       let _ = swash.get_image(fs, physical.cache_key);
     }
-  }
-}
-
-pub fn pixmap_to_softbuffer(pixmap: &Pixmap, buffer: &mut [u32]) {
-  // chunks_exact(4) gives the compiler bounds info to drop per-byte
-  // checks and vectorize the BGRA->u32 conversion (this loop is ~1M
-  // iterations per frame).
-  let data = pixmap.data();
-  for (px, chunk) in buffer.iter_mut().zip(data.chunks_exact(4)) {
-    let r = chunk[0] as u32;
-    let g = chunk[1] as u32;
-    let b = chunk[2] as u32;
-    *px = (r << 16) | (g << 8) | b;
   }
 }
