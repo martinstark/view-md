@@ -28,6 +28,7 @@ fn usage() -> ! {
          \x20\x20j k d u f b    scroll line / half / full page\n\
          \x20\x20g G            top / bottom\n\
          \x20\x20] [ }} {{      next/prev heading / block\n\
+         \x20\x20/              search; Enter cycles matches, Esc closes\n\
          \x20\x20+ - 0          zoom in / out / reset\n\
          \x20\x20y              yank visible code block\n\
          \x20\x20Ctrl+C         copy selected text"
