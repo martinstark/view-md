@@ -13,7 +13,6 @@ pub struct Theme {
   pub code_bg: SkColor,
   pub code_fg: Color,
   pub inline_code_bg: SkColor,
-  pub quote_bar: SkColor,
   pub rule: SkColor,
   pub border: SkColor,
   /// Per-alert-kind accent colors used for the left bar and title
@@ -38,7 +37,6 @@ impl Theme {
       code_bg: SkColor::from_rgba8(0x15, 0x1b, 0x23, 0xff),
       code_fg: Color::rgb(0xe6, 0xed, 0xf3),
       inline_code_bg: SkColor::from_rgba8(0x6e, 0x76, 0x81, 0x40),
-      quote_bar: SkColor::from_rgba8(0x30, 0x36, 0x3d, 0xff),
       rule: SkColor::from_rgba8(0x21, 0x26, 0x2d, 0xff),
       border: SkColor::from_rgba8(0x30, 0x36, 0x3d, 0xff),
       alert_note: (0x4e, 0x97, 0xff),
@@ -60,7 +58,6 @@ impl Theme {
       code_bg: SkColor::from_rgba8(0xf6, 0xf8, 0xfa, 0xff),
       code_fg: Color::rgb(0x1f, 0x23, 0x28),
       inline_code_bg: SkColor::from_rgba8(0xaf, 0xb8, 0xc1, 0x33),
-      quote_bar: SkColor::from_rgba8(0xd0, 0xd7, 0xde, 0xff),
       rule: SkColor::from_rgba8(0xd8, 0xde, 0xe4, 0xff),
       border: SkColor::from_rgba8(0xd0, 0xd7, 0xde, 0xff),
       alert_note: (0x1f, 0x6f, 0xeb),
@@ -73,6 +70,13 @@ impl Theme {
 
   pub fn select(dark: bool) -> Self {
     if dark { Self::dark() } else { Self::light() }
+  }
+
+  /// Quote bar is rendered in the same grey as list markers (`muted`) so
+  /// the two decorative greys can't drift apart.
+  pub fn quote_bar(&self) -> SkColor {
+    let m = self.muted;
+    SkColor::from_rgba8(m.r(), m.g(), m.b(), m.a())
   }
 
   /// (bar SkColor, title cosmic-text Color) for a given alert kind.
