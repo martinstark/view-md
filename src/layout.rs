@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use tiny_skia::Color as SkColor;
 
-use crate::doc::{Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
+use crate::doc::{AlertKind, Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
 use crate::images::{self, ImageStore};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
@@ -372,6 +372,7 @@ fn layout_block(
     Block::Table { aligns, head, rows } => layout_table(aligns, head, rows, w, x, fs, theme, ctx),
     Block::Footnotes(defs) => layout_footnotes(defs, w, x, fs, theme, ctx),
     Block::Image { src, alt } => layout_image(src, alt, w, x, ctx),
+    Block::Alert { kind, blocks } => layout_alert(*kind, blocks, w, x, fs, theme, ctx),
   }
 }
 
@@ -845,6 +846,66 @@ fn layout_quote(
   });
   all.extend(inner_laid);
   (all, inner_h)
+}
+
+/// Lay out a GFM alert: a left bar in the kind's accent color, a bold
+/// title row in the same accent, and the body content indented and
+/// gapped from the title. Composed entirely from existing Bar + Text
+/// LaidKinds — paint.rs needs no new arm.
+fn layout_alert(
+  kind: AlertKind,
+  inner: &[Block],
+  w: f32,
+  x: f32,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+  let s = ctx.scale;
+  let indent = QUOTE_INDENT * s;
+  let inner_x = x + indent;
+  let inner_w = (w - indent).max(80.0);
+  let (bar_color, title_color) = theme.alert_colors(kind);
+
+  // Title row: bold, accent-colored label of the kind (e.g. "Note").
+  let label_inlines = [Inline::Text(kind.label().to_string())];
+  let (mut title_laid, title_h) = text_block(
+    &label_inlines,
+    title_color,
+    BODY_FS * s,
+    BODY_FS * s * BODY_LH_RATIO,
+    inner_w,
+    inner_x,
+    fs,
+    theme,
+    true,
+  );
+
+  // Tight gap between title and body — half the normal block gap, so
+  // the alert reads as one cohesive unit rather than two paragraphs.
+  let title_to_body_gap = (BLOCK_GAP * s) * 0.5;
+  let (mut body_laid, body_h) =
+    layout_blocks(inner, inner_w, inner_x, fs, theme, ctx, BLOCK_GAP * s);
+
+  let body_y = title_h + title_to_body_gap;
+  for lb in body_laid.iter_mut() {
+    lb.y += body_y;
+  }
+  let total_h = body_y + body_h;
+
+  let mut all: Vec<LaidBlock> = Vec::with_capacity(title_laid.len() + body_laid.len() + 1);
+  all.push(LaidBlock {
+    y: 0.0,
+    h: total_h,
+    x,
+    kind: LaidKind::Bar {
+      color: bar_color,
+      width: QUOTE_BAR_W * s,
+    },
+  });
+  all.append(&mut title_laid);
+  all.extend(body_laid);
+  (all, total_h)
 }
 
 fn text_block(
