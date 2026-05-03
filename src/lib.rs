@@ -169,7 +169,7 @@ pub fn run(source: String, title: String) {
     scroll_y: 0.0,
     window: None,
     surface: None,
-    pixmap: None,
+    surface_size: (0, 0),
     laid: None,
     spec_handle: Some(layout_handle),
     speculative_w: assumed_surface_w,

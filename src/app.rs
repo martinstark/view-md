@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use cosmic_text::{Cursor, FontSystem, SwashCache};
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
-use tiny_skia::Pixmap;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -17,7 +16,7 @@ use winit::window::{Window, WindowId};
 
 use crate::doc::Doc;
 use crate::layout::{LaidDoc, LaidKind, layout_parallel};
-use crate::paint::{Painter, pixmap_to_softbuffer};
+use crate::paint::{Frame, Painter};
 use crate::state::{self, Prefs};
 use crate::theme::Theme;
 
@@ -56,7 +55,11 @@ pub struct App {
   pub scroll_y: f32,
   pub window: Option<Rc<Window>>,
   pub surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-  pub pixmap: Option<Pixmap>,
+  /// Current physical surface dimensions, kept in sync with the
+  /// softbuffer surface and the window. Replaces the old `pixmap` field
+  /// (paint now writes directly into the softbuffer u32 slice via
+  /// `Frame`, so we no longer need a BGRA scratch pixmap on App).
+  pub surface_size: (u32, u32),
   pub laid: Option<LaidDoc>,
   /// Speculative-layout join handle, held by the App until `resumed()`
   /// has finished window+surface creation. `take()` + `join()` there
@@ -177,7 +180,7 @@ impl ApplicationHandler for App {
       self.full_highlight = full_highlight;
     }
 
-    self.pixmap = Some(Pixmap::new(w, h).expect("pixmap"));
+    self.surface_size = (w, h);
     let actual_scale = self.zoom * self.dpi_scale.max(1.0);
     let dims_match = (w as f32 - self.speculative_w).abs() < 0.5
       && (actual_scale - self.speculative_scale).abs() < f32::EPSILON;
@@ -240,7 +243,7 @@ impl ApplicationHandler for App {
         if let Some(surface) = self.surface.as_mut() {
           let (w, h) = (size.width.max(1), size.height.max(1));
           let _ = surface.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
-          self.pixmap = Some(Pixmap::new(w, h).expect("pixmap"));
+          self.surface_size = (w, h);
           self.relayout(w as f32);
           self.request_redraw();
         }
@@ -479,11 +482,7 @@ impl App {
   }
 
   fn viewport_h(&self) -> f32 {
-    self
-      .pixmap
-      .as_ref()
-      .map(|p| p.height() as f32)
-      .unwrap_or(0.0)
+    self.surface_size.1 as f32
   }
 
   fn relayout(&mut self, surface_w: f32) {
@@ -510,11 +509,8 @@ impl App {
   }
 
   fn current_surface_width(&self) -> f32 {
-    self
-      .pixmap
-      .as_ref()
-      .map(|p| p.width() as f32)
-      .unwrap_or(920.0)
+    let w = self.surface_size.0;
+    if w == 0 { 920.0 } else { w as f32 }
   }
 
   fn persist(&self) {
@@ -693,7 +689,7 @@ impl App {
       crate::trace!("relayout_full_highlight_done");
     }
 
-    let (Some(surface), Some(pixmap)) = (self.surface.as_mut(), self.pixmap.as_mut()) else {
+    let Some(surface) = self.surface.as_mut() else {
       return;
     };
 
@@ -702,10 +698,13 @@ impl App {
     }
 
     let theme = Theme::select(self.dark);
+    let mut buffer = surface.buffer_mut().expect("buffer_mut");
+    let (fw, fh) = self.surface_size;
+    let mut frame = Frame::new(&mut buffer, fw, fh);
     if let Some(laid) = self.laid.as_ref() {
-      self.painter.paint_doc(pixmap, laid, &theme, self.scroll_y);
+      self.painter.paint_doc(&mut frame, laid, &theme, self.scroll_y);
     } else {
-      self.painter.paint_blank(pixmap, &theme);
+      self.painter.paint_blank(&mut frame, &theme);
     }
 
     if let Some(sel) = self.selection {
@@ -713,17 +712,16 @@ impl App {
         if let Some(laid) = self.laid.as_ref() {
           self
             .painter
-            .paint_selection(pixmap, laid, &sel, &theme, self.scroll_y);
+            .paint_selection(&mut frame, laid, &sel, &theme, self.scroll_y);
         }
       }
     }
 
     if self.help_visible {
-      self.painter.paint_help_overlay(pixmap, &theme);
+      self.painter.paint_help_overlay(&mut frame, &theme);
     }
 
-    let mut buffer = surface.buffer_mut().expect("buffer_mut");
-    pixmap_to_softbuffer(pixmap, &mut buffer);
+    drop(frame);
     buffer.present().expect("present");
 
     if !self.painted_once {
