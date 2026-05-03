@@ -344,6 +344,106 @@ impl Painter {
     );
   }
 
+  /// Search overlay: a small bottom-center bar with `/<query>` on
+  /// the left and `<i> / <n>` (or `no matches`) on the right.
+  /// Drawn on top of the doc, beneath the help overlay scrim if
+  /// both are somehow active.
+  pub fn paint_search_overlay(
+    &mut self,
+    frame: &mut Frame,
+    theme: &Theme,
+    query: &str,
+    current: Option<usize>,
+    total: usize,
+  ) {
+    let card_w = 480.0_f32;
+    let card_h = 36.0_f32;
+    let pad_x = 14.0_f32;
+    let cx = (frame.width as f32 - card_w) / 2.0;
+    let cy = frame.height as f32 - card_h - 24.0;
+
+    let card_bg = if theme.is_dark {
+      SkColor::from_rgba8(0x16, 0x1b, 0x22, 0xff)
+    } else {
+      SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff)
+    };
+    fill_rounded_rect_aa(
+      frame,
+      cx as i32,
+      cy as i32,
+      card_w as u32,
+      card_h as u32,
+      8.0,
+      card_bg,
+    );
+    stroke_rounded_rect_aa(
+      frame,
+      cx as i32,
+      cy as i32,
+      card_w as u32,
+      card_h as u32,
+      8.0,
+      theme.border,
+      1.0,
+    );
+
+    // Left: "/<query>_". Trailing underscore stands in for a cursor
+    // so the user sees their input continues here.
+    let left = format!("/{}_", query);
+    let left_buf = crate::layout::make_plain_buffer(
+      &mut self.fs,
+      &left,
+      14.0,
+      18.0,
+      card_w - pad_x * 2.0 - 80.0,
+      crate::text::FONT_SANS,
+    );
+    draw_buffer(
+      frame,
+      &left_buf,
+      &mut self.fs,
+      &mut self.swash,
+      cx + pad_x,
+      cy + (card_h - 18.0) / 2.0,
+      theme.fg,
+    );
+
+    // Right: "<i> / <n>" or "no matches" or " " (empty query).
+    let right_text = if query.is_empty() {
+      String::new()
+    } else if total == 0 {
+      "no matches".to_string()
+    } else {
+      let i = current.map(|c| c + 1).unwrap_or(0);
+      format!("{i} / {total}")
+    };
+    if !right_text.is_empty() {
+      let right_buf = crate::layout::make_plain_buffer(
+        &mut self.fs,
+        &right_text,
+        12.0,
+        16.0,
+        80.0,
+        crate::text::FONT_SANS,
+      );
+      // Right-align: measure and place at card right minus measured width.
+      let measured = right_buf
+        .layout_runs()
+        .next()
+        .map(|r| r.line_w)
+        .unwrap_or(0.0);
+      draw_buffer(
+        frame,
+        &right_buf,
+        &mut self.fs,
+        &mut self.swash,
+        cx + card_w - pad_x - measured,
+        cy + (card_h - 16.0) / 2.0,
+        theme.muted,
+      );
+    }
+  }
+
   pub fn paint_help_overlay(&mut self, frame: &mut Frame, theme: &Theme) {
     // Dim the doc behind. Translucent black via alpha-composite — too
     // visible to skip the alpha math, so go through the scratch-pixmap
@@ -368,6 +468,7 @@ impl Painter {
       ("] / [", "next / prev heading"),
       ("} / {", "next / prev block"),
       ("y", "yank visible code block"),
+      ("/", "search; Enter cycles, Esc closes"),
       ("?", "toggle this help"),
     ];
 

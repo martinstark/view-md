@@ -128,6 +128,19 @@ pub struct App {
   /// the timer fires with the file still empty, the erase is genuine
   /// and we apply it.
   pub empty_reload_deadline: Option<Instant>,
+  /// Active in-doc search. `Some` while the search overlay is open;
+  /// `None` after Esc dismisses it. Driven by `/` to open and Enter
+  /// to advance to the next match.
+  pub search: Option<SearchState>,
+}
+
+/// In-doc search state. Maintains the current query, the indices of
+/// top-level doc blocks containing matches (in document order), and
+/// the cursor into that list. Jumping cycles forward through the list.
+pub struct SearchState {
+  pub query: String,
+  pub matches: Vec<usize>,
+  pub current: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -481,6 +494,15 @@ impl App {
         return;
       }
     }
+    // Search captures all input while open: Esc closes, Enter advances
+    // to the next match (cycling), Backspace edits the query, and any
+    // unmodified printable character appends to the query (live
+    // re-search). All other keys are swallowed so vmd's normal
+    // shortcuts don't fire mid-search.
+    if self.search.is_some() {
+      self.handle_search_key(&key);
+      return;
+    }
     if self.help_visible {
       match key.as_ref() {
         Key::Character("?") | Key::Named(NamedKey::Escape) | Key::Character("q") => {
@@ -492,6 +514,14 @@ impl App {
       return;
     }
     match key.as_ref() {
+      Key::Character("/") => {
+        self.search = Some(SearchState {
+          query: String::new(),
+          matches: Vec::new(),
+          current: None,
+        });
+        self.request_redraw();
+      }
       Key::Character("?") => {
         self.help_visible = true;
         self.request_redraw();
@@ -901,6 +931,94 @@ impl App {
     crate::trace!("anchor_miss '{}'", anchor);
   }
 
+  fn handle_search_key(&mut self, key: &Key) {
+    match key.as_ref() {
+      Key::Named(NamedKey::Escape) => {
+        self.search = None;
+        self.request_redraw();
+      }
+      Key::Named(NamedKey::Enter) => {
+        self.advance_search_match();
+      }
+      Key::Named(NamedKey::Backspace) => {
+        if let Some(s) = self.search.as_mut() {
+          if s.query.pop().is_some() {
+            self.recompute_search();
+          }
+        }
+      }
+      Key::Character(s) => {
+        // Skip Ctrl/Alt-modified character events so e.g. Ctrl+C copy
+        // (handled above) doesn't double-fire and so other shortcuts
+        // don't end up in the query string. Plain Shift is fine —
+        // it's already baked into the logical key character.
+        if self.modifiers.state().control_key() || self.modifiers.state().alt_key() {
+          return;
+        }
+        if let Some(state) = self.search.as_mut() {
+          state.query.push_str(s);
+        }
+        self.recompute_search();
+      }
+      _ => {}
+    }
+  }
+
+  /// Re-walks the doc against the current query, jumps to the first
+  /// match. Called on every query mutation (char append, backspace).
+  fn recompute_search(&mut self) {
+    let Some(state) = self.search.as_mut() else {
+      return;
+    };
+    let q = state.query.to_lowercase();
+    state.matches.clear();
+    state.current = None;
+    if q.is_empty() {
+      self.request_redraw();
+      return;
+    }
+    for (i, b) in self.doc.blocks.iter().enumerate() {
+      if block_to_text(b).to_lowercase().contains(&q) {
+        state.matches.push(i);
+      }
+    }
+    if !state.matches.is_empty() {
+      state.current = Some(0);
+      let target = state.matches[0];
+      self.scroll_to_block(target);
+    }
+    self.request_redraw();
+  }
+
+  fn advance_search_match(&mut self) {
+    let Some(state) = self.search.as_mut() else {
+      return;
+    };
+    if state.matches.is_empty() {
+      return;
+    }
+    let next = state.current.map(|c| (c + 1) % state.matches.len()).unwrap_or(0);
+    state.current = Some(next);
+    let target = state.matches[next];
+    self.scroll_to_block(target);
+    self.request_redraw();
+  }
+
+  /// Scrolls so the i-th top-level doc block sits near viewport top.
+  /// Uses `block_ys` (one entry per top-level block) and applies the
+  /// same heading-style breathing room as `]`/`[` and anchor jumps.
+  fn scroll_to_block(&mut self, doc_block_idx: usize) {
+    let Some(laid) = self.laid.as_ref() else {
+      return;
+    };
+    let Some(&y) = laid.block_ys.get(doc_block_idx) else {
+      return;
+    };
+    let max = (laid.total_height - self.viewport_h()).max(0.0);
+    self.scroll_y =
+      (y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+  }
+
   fn current_surface_width(&self) -> f32 {
     let w = self.surface_size.0;
     if w == 0 { 920.0 } else { w as f32 }
@@ -1119,6 +1237,11 @@ impl App {
       }
     }
 
+    if let Some(s) = self.search.as_ref() {
+      self
+        .painter
+        .paint_search_overlay(&mut frame, &theme, &s.query, s.current, s.matches.len());
+    }
     if self.help_visible {
       self.painter.paint_help_overlay(&mut frame, &theme);
     }
@@ -1259,6 +1382,64 @@ fn block_full_text(block: &crate::layout::LaidBlock) -> String {
   };
   let lines = buffer_text_lines(buf);
   lines.join("\n")
+}
+
+/// Flatten a top-level block to plain text for substring search.
+/// Recurses into structural containers (Quote, List items, Alert,
+/// Footnotes, Table cells); CodeBlock yields its raw source; Image
+/// yields its alt text. Inline mixing within a paragraph delegates
+/// to `doc::flatten_text` so links / em / strong / inline code all
+/// contribute their textual content.
+fn block_to_text(b: &crate::doc::Block) -> String {
+  let mut out = String::new();
+  push_block_text(b, &mut out);
+  out
+}
+
+fn push_block_text(b: &crate::doc::Block, out: &mut String) {
+  use crate::doc::Block;
+  match b {
+    Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+      out.push_str(&crate::doc::flatten_text(inlines));
+    }
+    Block::CodeBlock { code, .. } => out.push_str(code),
+    Block::Quote(inner) | Block::Alert { blocks: inner, .. } => {
+      for b in inner {
+        push_block_text(b, out);
+        out.push(' ');
+      }
+    }
+    Block::List { items, .. } => {
+      for item in items {
+        for b in &item.blocks {
+          push_block_text(b, out);
+          out.push(' ');
+        }
+      }
+    }
+    Block::Table { head, rows, .. } => {
+      for row in head {
+        out.push_str(&crate::doc::flatten_text(row));
+        out.push(' ');
+      }
+      for row in rows {
+        for cell in row {
+          out.push_str(&crate::doc::flatten_text(cell));
+          out.push(' ');
+        }
+      }
+    }
+    Block::Footnotes(defs) => {
+      for def in defs {
+        for b in &def.blocks {
+          push_block_text(b, out);
+          out.push(' ');
+        }
+      }
+    }
+    Block::Image { alt, .. } => out.push_str(alt),
+    Block::Rule => {}
+  }
 }
 
 /// Convert heading text to a GitHub-style anchor slug:
