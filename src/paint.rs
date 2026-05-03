@@ -51,6 +51,52 @@ impl<'a> Frame<'a> {
     }
   }
 
+  /// Translucent axis-aligned rect fill. Blends `color_rgb` (top 24
+  /// bits) onto the frame using `alpha` (0..=255) as coverage. Used for
+  /// inline-code pills and selection rects whose theme colors carry a
+  /// non-opaque alpha. Substantially cheaper than the `composite_pixmap`
+  /// path for axis-aligned rects because no scratch allocation and no
+  /// per-pixel premul reconstruction.
+  pub fn fill_rect_alpha(&mut self, x: i32, y: i32, w: i32, h: i32, color_rgb: u32, alpha: u8) {
+    if alpha == 0 {
+      return;
+    }
+    if alpha == 255 {
+      self.fill_rect(x, y, w, h, color_rgb);
+      return;
+    }
+    let fw = self.width as i32;
+    let fh = self.height as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(fw);
+    let y1 = (y + h).min(fh);
+    if x0 >= x1 || y0 >= y1 {
+      return;
+    }
+    let sa = alpha as u32;
+    let inv = 255 - sa;
+    // Pre-multiply src once, blend per-pixel.
+    let sr = ((color_rgb >> 16) & 0xFF) * sa;
+    let sg = ((color_rgb >> 8) & 0xFF) * sa;
+    let sb = (color_rgb & 0xFF) * sa;
+    let stride = self.width as usize;
+    for ry in y0..y1 {
+      let row_start = (ry as usize) * stride;
+      for rx in x0..x1 {
+        let idx = row_start + rx as usize;
+        let dst = self.data[idx];
+        let dr = (dst >> 16) & 0xFF;
+        let dg = (dst >> 8) & 0xFF;
+        let db = dst & 0xFF;
+        let r = (sr + dr * inv) / 255;
+        let g = (sg + dg * inv) / 255;
+        let b = (sb + db * inv) / 255;
+        self.data[idx] = (r << 16) | (g << 8) | b;
+      }
+    }
+  }
+
   /// Composite a tiny-skia `Pixmap` (RGBA8 premultiplied) into the frame
   /// at `(x, y)`. Used for the few elements that go through tiny-skia's
   /// path rasterizer — rounded code-block backgrounds, task-box strokes,
@@ -110,6 +156,18 @@ fn sk_to_argb(c: SkColor) -> u32 {
   let g = (c.green() * 255.0) as u32;
   let b = (c.blue() * 255.0) as u32;
   (r << 16) | (g << 8) | b
+}
+
+/// Extract `(rgb24, alpha8)` from a tiny-skia color. Used by translucent
+/// axis-aligned rects (inline-code pills, selection bg) so we preserve
+/// the theme's intended alpha instead of rendering as opaque.
+#[inline]
+fn sk_to_rgba(c: SkColor) -> (u32, u8) {
+  let r = (c.red() * 255.0) as u32;
+  let g = (c.green() * 255.0) as u32;
+  let b = (c.blue() * 255.0) as u32;
+  let a = (c.alpha() * 255.0) as u8;
+  ((r << 16) | (g << 8) | b, a)
 }
 
 #[inline]
@@ -662,7 +720,7 @@ fn draw_run_pills(
   bg: SkColor,
 ) {
   let line_height = buf.metrics().line_height;
-  let argb = sk_to_argb(bg);
+  let (rgb, alpha) = sk_to_rgba(bg);
   for run in buf.layout_runs() {
     let mut x_start: Option<f32> = None;
     let mut x_end: Option<f32> = None;
@@ -680,19 +738,17 @@ fn draw_run_pills(
       let pad_y = 1.0;
       let pill_top = run.line_top;
       let pill_h = line_height - 2.0;
-      // NOTE: pill bg has a translucent alpha (0x33–0x40) in both
-      // themes; with sk_to_argb we drop the alpha. Inline-code pills
-      // were already rendering as opaque-ish on top of the doc bg
-      // because tiny-skia's fill_rect with anti_alias=false applied
-      // alpha channel only at edge pixels, and the rest blended onto
-      // an opaque pixmap fill. The simplification here is acceptable
-      // (visible in dark theme as a slightly more solid pill).
-      frame.fill_rect(
+      // theme.inline_code_bg carries a translucent alpha (0x33 light /
+      // 0x40 dark). fill_rect_alpha blends it correctly onto the doc
+      // bg — preserves the muted-pill look from before the u32 paint
+      // refactor.
+      frame.fill_rect_alpha(
         (ox + xs - pad_x) as i32,
         (oy + pill_top + pad_y) as i32,
         ((xe - xs) + pad_x * 2.0) as i32,
         (pill_h - pad_y * 2.0) as i32,
-        argb,
+        rgb,
+        alpha,
       );
     }
   }
@@ -749,11 +805,10 @@ fn paint_block_selection(
   };
   let line_height = buffer.metrics().line_height;
   let lh = line_height;
-  // Selection bg is translucent (alpha 0x70 / 0x80). Render each
-  // selection-rect via composite_pixmap so the alpha actually blends —
-  // direct fill_rect would lose the alpha and produce an opaque highlight.
-  let argb_full = sk_to_argb(bg);
-  let alpha = bg.alpha();
+  // Selection bg is translucent (alpha 0x70 / 0x80). fill_rect_alpha
+  // does the per-pixel blend without a scratch pixmap — cheaper than
+  // composite_pixmap for axis-aligned rects.
+  let (rgb, alpha) = sk_to_rgba(bg);
   for run in buffer.layout_runs() {
     let line_idx = run.line_i;
     let after_start = start.map_or(true, |s| line_idx > s.line);
@@ -786,18 +841,9 @@ fn paint_block_selection(
 
     let rect_x = (ox + xs) as i32;
     let rect_y = (oy + run.line_top) as i32;
-    let rect_w = (xe - xs).max(1.0) as u32;
-    let rect_h = lh.max(1.0) as u32;
-    if alpha >= 0.999 {
-      frame.fill_rect(rect_x, rect_y, rect_w as i32, rect_h as i32, argb_full);
-    } else {
-      // Build a tiny scratch pixmap of the selection rect's footprint
-      // pre-filled with the translucent color, composite onto frame.
-      if let Some(mut pm) = Pixmap::new(rect_w.max(1), rect_h.max(1)) {
-        pm.fill(bg);
-        frame.composite_pixmap(rect_x, rect_y, &pm);
-      }
-    }
+    let rect_w = (xe - xs).max(1.0) as i32;
+    let rect_h = lh.max(1.0) as i32;
+    frame.fill_rect_alpha(rect_x, rect_y, rect_w, rect_h, rgb, alpha);
   }
 }
 
