@@ -130,22 +130,43 @@ pub fn warm_languages(langs: &[String]) {
   }
 }
 
+/// Bounded worker pool for `precompute`. Earlier we spawned one OS
+/// thread per code block — fine on small docs, but a code-heavy doc
+/// (test.md = 12 blocks) plus the spec thread's parallel layout/warm
+/// (~2 workers) and main + bg add up to ~16 threads on a 16-core CPU,
+/// causing visible scheduler contention in the spec/warm phase. 4
+/// workers is enough to amortize per-language regex compilation costs
+/// while leaving headroom for the layout/warm lanes.
+const PRECOMPUTE_POOL: usize = 4;
+
 /// Eagerly populate the highlight cache for the given (lang, code) blocks
-/// in the active theme only. Spawns one worker per block — different
-/// languages compile their regexes independently, so we get near-linear
-/// speedup on multi-core machines. Inactive theme is computed lazily.
+/// in the active theme only. Inactive theme is computed lazily.
 pub fn precompute(blocks: Vec<(String, String)>, dark: bool) {
-  let handles: Vec<_> = blocks
-    .into_iter()
-    .map(|(lang, code)| {
+  if blocks.is_empty() {
+    return;
+  }
+  let n_workers = blocks.len().min(PRECOMPUTE_POOL);
+  let queue: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(blocks));
+  let handles: Vec<_> = (0..n_workers)
+    .map(|_| {
+      let q = queue.clone();
       std::thread::spawn(move || {
-        let key: CacheKey = (lang.clone(), code.clone(), dark);
-        if cache().lock().ok().map_or(false, |c| c.contains_key(&key)) {
-          return;
-        }
-        let spans = Arc::new(compute_highlight(&code, &lang, dark));
-        if let Ok(mut c) = cache().lock() {
-          c.insert(key, spans);
+        loop {
+          let item = match q.lock() {
+            Ok(mut g) => g.pop(),
+            Err(_) => return,
+          };
+          let Some((lang, code)) = item else {
+            return;
+          };
+          let key: CacheKey = (lang.clone(), code.clone(), dark);
+          if cache().lock().ok().map_or(false, |c| c.contains_key(&key)) {
+            continue;
+          }
+          let spans = Arc::new(compute_highlight(&code, &lang, dark));
+          if let Ok(mut c) = cache().lock() {
+            c.insert(key, spans);
+          }
         }
       })
     })
