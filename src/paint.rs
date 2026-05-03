@@ -814,25 +814,97 @@ pub fn warm_glyph_cache(
       // there's nothing visible left to warm.
       break;
     }
-    match &block.kind {
-      LaidKind::Text { buffer, .. } => warm_buffer(swash, fs, buffer),
-      LaidKind::CodeBlock {
-        buffer, lang_label, ..
-      } => {
-        warm_buffer(swash, fs, buffer);
-        if let Some(label) = lang_label.as_ref() {
-          warm_buffer(swash, fs, label);
-        }
-      }
-      LaidKind::Table { rows, .. } => {
-        for row in rows {
-          for cell in &row.cells {
-            warm_buffer(swash, fs, &cell.buffer);
+    warm_block(swash, fs, block);
+  }
+}
+
+/// Parallel warm: round-robins blocks across `1 + worker_fs.len()` lanes.
+/// Each lane uses its own (FontSystem, SwashCache); after warming, the
+/// worker SwashCaches are drained into `main_swash`. Keys are portable
+/// across our FontSystems because all of them load identical fonts in
+/// identical order — same property item-2 (parallel layout) relies on.
+pub fn warm_glyph_cache_parallel(
+  main_swash: &mut SwashCache,
+  main_fs: &mut FontSystem,
+  worker_fs: &mut [FontSystem],
+  worker_swashes: &mut [SwashCache],
+  laid: &LaidDoc,
+  viewport_h: f32,
+) {
+  assert_eq!(worker_fs.len(), worker_swashes.len());
+  let n_lanes = 1 + worker_fs.len();
+  let blocks = &laid.blocks;
+  std::thread::scope(|s| {
+    let handles: Vec<_> = worker_fs
+      .iter_mut()
+      .zip(worker_swashes.iter_mut())
+      .enumerate()
+      .map(|(lane, (wfs, wsw))| {
+        let lane_idx = lane + 1;
+        s.spawn(move || {
+          for (i, block) in blocks.iter().enumerate() {
+            if i % n_lanes != lane_idx {
+              continue;
+            }
+            if block.y >= viewport_h {
+              // Per-lane monotone y: once past viewport, all remaining
+              // on this lane are also past.
+              break;
+            }
+            warm_block(wsw, wfs, block);
           }
+        })
+      })
+      .collect();
+    // Caller thread runs lane 0 in parallel with workers.
+    for (i, block) in blocks.iter().enumerate() {
+      if i % n_lanes != 0 {
+        continue;
+      }
+      if block.y >= viewport_h {
+        break;
+      }
+      warm_block(main_swash, main_fs, block);
+    }
+    for h in handles {
+      h.join().expect("warm worker panicked");
+    }
+  });
+  // Merge worker caches into main. `or_insert` keeps main's entry when
+  // duplicates exist (rare — only happens if two lanes warmed the same
+  // glyph_id × size, e.g. headings on different lanes that share a font
+  // size and chars).
+  for w_swash in worker_swashes.iter_mut() {
+    let img = std::mem::take(&mut w_swash.image_cache);
+    for (k, v) in img {
+      main_swash.image_cache.entry(k).or_insert(v);
+    }
+    let oc = std::mem::take(&mut w_swash.outline_command_cache);
+    for (k, v) in oc {
+      main_swash.outline_command_cache.entry(k).or_insert(v);
+    }
+  }
+}
+
+fn warm_block(swash: &mut SwashCache, fs: &mut FontSystem, block: &LaidBlock) {
+  match &block.kind {
+    LaidKind::Text { buffer, .. } => warm_buffer(swash, fs, buffer),
+    LaidKind::CodeBlock {
+      buffer, lang_label, ..
+    } => {
+      warm_buffer(swash, fs, buffer);
+      if let Some(label) = lang_label.as_ref() {
+        warm_buffer(swash, fs, label);
+      }
+    }
+    LaidKind::Table { rows, .. } => {
+      for row in rows {
+        for cell in &row.cells {
+          warm_buffer(swash, fs, &cell.buffer);
         }
       }
-      _ => {}
     }
+    _ => {}
   }
 }
 
