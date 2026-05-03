@@ -74,13 +74,13 @@ fn main() -> ExitCode {
     return ExitCode::from(2);
   }
 
-  let (source, title, watch_path) = if from_stdin {
+  let (source, title, watch_path, base_dir) = if from_stdin {
     let mut buf = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
       eprintln!("vmd: stdin: {e}");
       return ExitCode::from(1);
     }
-    (buf, String::from("stdin"), None)
+    (buf, String::from("stdin"), None, None)
   } else if let Some(path) = path {
     let p = match std::fs::canonicalize(&path) {
       Ok(p) => p,
@@ -97,13 +97,14 @@ fn main() -> ExitCode {
       }
     };
     let title = file_title(&p);
-    (body, title, watch.then_some(p))
+    let base_dir = p.parent().map(|d| d.to_path_buf());
+    (body, title, watch.then_some(p), base_dir)
   } else {
     usage();
   };
 
   crate::trace!("source_read");
-  vmd::run(source, title, watch_path);
+  vmd::run(source, title, watch_path, base_dir);
   ExitCode::SUCCESS
 }
 

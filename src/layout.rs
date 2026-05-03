@@ -1,8 +1,12 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use tiny_skia::Color as SkColor;
 
 use crate::doc::{Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
+use crate::images::{self, ImageStore};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
 use crate::text::{FONT_MONO, FONT_SANS, marker_features, mono_features, sans_features};
 use crate::theme::Theme;
@@ -87,6 +91,16 @@ pub enum LaidKind {
     header_bg: SkColor,
     alt_bg: SkColor,
   },
+  Image {
+    /// Absolute path the painter looks up in the ImageStore. `None`
+    /// when the source couldn't be resolved (remote URL in v1, or
+    /// stdin with a relative src) — paint just draws the alt-text
+    /// placeholder.
+    path: Option<std::path::PathBuf>,
+    alt: String,
+    width: f32,
+    height: f32,
+  },
 }
 
 pub struct TableRowLayout {
@@ -127,8 +141,20 @@ pub fn layout(
   theme: &Theme,
   full_highlight: bool,
   scale: f32,
+  images: Arc<ImageStore>,
+  base_dir: Option<PathBuf>,
 ) -> LaidDoc {
-  layout_parallel(doc, surface_w, fs, &mut [], theme, full_highlight, scale)
+  layout_parallel(
+    doc,
+    surface_w,
+    fs,
+    &mut [],
+    theme,
+    full_highlight,
+    scale,
+    images,
+    base_dir,
+  )
 }
 
 /// Parallel variant: top-level blocks are partitioned round-robin across
@@ -146,6 +172,8 @@ pub fn layout_parallel(
   theme: &Theme,
   full_highlight: bool,
   scale: f32,
+  images: Arc<ImageStore>,
+  base_dir: Option<PathBuf>,
 ) -> LaidDoc {
   let pad_x = PAD_X_MIN * scale;
   let pad_y = PAD_Y * scale;
@@ -157,6 +185,8 @@ pub fn layout_parallel(
   let ctx = Ctx {
     full_highlight,
     scale,
+    images,
+    base_dir,
   };
 
   let n_lanes = 1 + worker_fs.len();
@@ -254,6 +284,8 @@ pub fn layout_parallel(
 struct Ctx {
   full_highlight: bool,
   scale: f32,
+  images: Arc<ImageStore>,
+  base_dir: Option<PathBuf>,
 }
 
 fn layout_blocks(
@@ -339,7 +371,40 @@ fn layout_block(
     Block::Quote(inner) => layout_quote(inner, w, x, fs, theme, ctx),
     Block::Table { aligns, head, rows } => layout_table(aligns, head, rows, w, x, fs, theme, ctx),
     Block::Footnotes(defs) => layout_footnotes(defs, w, x, fs, theme, ctx),
+    Block::Image { src, alt } => layout_image(src, alt, w, x, ctx),
   }
+}
+
+/// Lay out a block-level image. Dimensions come from the ImageStore (set
+/// at parse time by `read_dims`). Width clamps to content width;
+/// aspect ratio is preserved. Image is centered horizontally if smaller
+/// than content width, so it doesn't look pinned-left in a wide window.
+fn layout_image(src: &str, alt: &str, w: f32, x: f32, ctx: &Ctx) -> (Vec<LaidBlock>, f32) {
+  let path = images::resolve_src(src, ctx.base_dir.as_deref());
+  let (nat_w, nat_h) = path
+    .as_ref()
+    .and_then(|p| ctx.images.get_dims(p))
+    .unwrap_or((480, 270));
+  let nat_wf = nat_w as f32;
+  let nat_hf = nat_h as f32;
+  let display_w = nat_wf.min(w);
+  let aspect = if nat_wf > 0.0 { nat_hf / nat_wf } else { 0.5625 };
+  let display_h = display_w * aspect;
+  let img_x = x + ((w - display_w) / 2.0).max(0.0);
+  (
+    vec![LaidBlock {
+      y: 0.0,
+      h: display_h,
+      x: img_x,
+      kind: LaidKind::Image {
+        path,
+        alt: alt.to_string(),
+        width: display_w,
+        height: display_h,
+      },
+    }],
+    display_h,
+  )
 }
 
 fn layout_table(

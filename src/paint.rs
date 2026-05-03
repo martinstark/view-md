@@ -1,7 +1,11 @@
+use std::path::Path as FsPath;
+
 use cosmic_text::{Buffer, Color, Cursor, FontSystem, SwashCache, SwashContent};
+use image::RgbaImage;
 use tiny_skia::{Color as SkColor, FillRule, Path, PathBuilder, Pixmap, Transform};
 
 use crate::doc::CellAlign;
+use crate::images::ImageStore;
 use crate::layout::{LaidBlock, LaidDoc, LaidKind, TableCellLayout, TableRowLayout, UnderlineRun};
 use crate::theme::Theme;
 
@@ -260,7 +264,15 @@ impl Painter {
     Self { fs, swash }
   }
 
-  pub fn paint_doc(&mut self, frame: &mut Frame, doc: &LaidDoc, theme: &Theme, scroll_y: f32) {
+  pub fn paint_doc(
+    &mut self,
+    frame: &mut Frame,
+    doc: &LaidDoc,
+    theme: &Theme,
+    scroll_y: f32,
+    images: &ImageStore,
+    anim_elapsed_ms: u128,
+  ) {
     frame.fill_solid(sk_to_argb(theme.bg));
     let h = frame.height as f32;
     for block in &doc.blocks {
@@ -268,7 +280,16 @@ impl Painter {
       if by + block.h < 0.0 || by > h {
         continue;
       }
-      paint_block(frame, block, by, theme, &mut self.fs, &mut self.swash);
+      paint_block(
+        frame,
+        block,
+        by,
+        theme,
+        &mut self.fs,
+        &mut self.swash,
+        images,
+        anim_elapsed_ms,
+      );
     }
   }
 
@@ -450,6 +471,8 @@ fn paint_block(
   theme: &Theme,
   fs: &mut FontSystem,
   swash: &mut SwashCache,
+  images: &ImageStore,
+  anim_elapsed_ms: u128,
 ) {
   match &block.kind {
     LaidKind::Text {
@@ -538,6 +561,118 @@ fn paint_block(
     } => paint_table(
       frame, fs, swash, block.x, y, *block_w, rows, *border, *header_bg, theme,
     ),
+    LaidKind::Image {
+      path,
+      alt: _,
+      width,
+      height,
+    } => paint_image(
+      frame,
+      block.x,
+      y,
+      *width,
+      *height,
+      path.as_deref(),
+      images,
+      theme,
+      anim_elapsed_ms,
+    ),
+  }
+}
+
+/// Block-image painter. If frames are loaded, blits the active frame
+/// (animated images pick by `anim_elapsed_ms`; static images use frame
+/// 0). Otherwise paints a subdued placeholder rect at the same
+/// dimensions so the layout is stable while the bg decoder works.
+fn paint_image(
+  frame: &mut Frame,
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  path: Option<&FsPath>,
+  images: &ImageStore,
+  theme: &Theme,
+  anim_elapsed_ms: u128,
+) {
+  let entry = path.and_then(|p| images.get_frames(p));
+  match entry {
+    Some((frames, total_ms)) if !frames.is_empty() => {
+      let idx = crate::images::pick_frame_index(&frames, total_ms, anim_elapsed_ms);
+      blit_image_scaled(frame, &frames[idx].buffer, x, y, width, height);
+    }
+    _ => {
+      // Subtle placeholder: code-block-bg colored rect at the same
+      // dimensions so the page doesn't jump when the real pixels arrive.
+      frame.fill_rect(
+        x as i32,
+        y as i32,
+        width as i32,
+        height as i32,
+        sk_to_argb(theme.code_bg),
+      );
+    }
+  }
+}
+
+/// Nearest-neighbor downscale + alpha blend RGBA8 source onto the u32
+/// 0x00RRGGBB Frame. Optimized for the common case where the image is
+/// downscaled (display_w <= img.width) — a single integer-step iteration
+/// per dest pixel, no allocations.
+fn blit_image_scaled(frame: &mut Frame, img: &RgbaImage, dx: f32, dy: f32, dw: f32, dh: f32) {
+  if dw < 1.0 || dh < 1.0 {
+    return;
+  }
+  let img_w = img.width();
+  let img_h = img.height();
+  if img_w == 0 || img_h == 0 {
+    return;
+  }
+  let dx_i = dx as i32;
+  let dy_i = dy as i32;
+  let dw_i = dw as i32;
+  let dh_i = dh as i32;
+  let fw = frame.width as i32;
+  let fh = frame.height as i32;
+  let x0 = dx_i.max(0);
+  let y0 = dy_i.max(0);
+  let x1 = (dx_i + dw_i).min(fw);
+  let y1 = (dy_i + dh_i).min(fh);
+  if x0 >= x1 || y0 >= y1 {
+    return;
+  }
+  let inv_dw = (img_w as f32) / dw;
+  let inv_dh = (img_h as f32) / dh;
+  let stride = frame.width as usize;
+  let raw = img.as_raw();
+  let img_w_us = img_w as usize;
+  let img_h_us = img_h as usize;
+  for ry in y0..y1 {
+    let sy = (((ry as f32 - dy) * inv_dh) as usize).min(img_h_us - 1);
+    let src_row_base = sy * img_w_us * 4;
+    let dst_row_base = ry as usize * stride;
+    for rx in x0..x1 {
+      let sx = (((rx as f32 - dx) * inv_dw) as usize).min(img_w_us - 1);
+      let si = src_row_base + sx * 4;
+      let r = raw[si] as u32;
+      let g = raw[si + 1] as u32;
+      let b = raw[si + 2] as u32;
+      let a = raw[si + 3] as u32;
+      let di = dst_row_base + rx as usize;
+      if a == 255 {
+        frame.data[di] = (r << 16) | (g << 8) | b;
+      } else if a > 0 {
+        let dst = frame.data[di];
+        let dr = (dst >> 16) & 0xFF;
+        let dg = (dst >> 8) & 0xFF;
+        let db = dst & 0xFF;
+        let inv = 255 - a;
+        let or = (r * a + dr * inv) / 255;
+        let og = (g * a + dg * inv) / 255;
+        let ob = (b * a + db * inv) / 255;
+        frame.data[di] = (or << 16) | (og << 8) | ob;
+      }
+    }
   }
 }
 

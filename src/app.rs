@@ -10,8 +10,10 @@ use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event::{
+  ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
+};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -57,6 +59,13 @@ pub struct App {
   /// and `user_event` re-reads this path. `None` for stdin or
   /// non-watched runs.
   pub watch_path: Option<PathBuf>,
+  /// Parent directory of the loaded markdown file, used to resolve
+  /// relative image paths. `None` for stdin (relative srcs unresolvable).
+  pub base_dir: Option<PathBuf>,
+  /// Cache of image dimensions + decoded pixels, shared with the bg
+  /// decoder thread. Layout reads dims; paint reads pixels and falls
+  /// back to a placeholder rect when not yet present.
+  pub images: Arc<crate::images::ImageStore>,
   pub doc: Doc,
   pub painter: Painter,
   /// Extra FontSystems used for parallel block shaping in
@@ -101,6 +110,13 @@ pub struct App {
   pub dpi_scale: f32,
   /// X11/macOS/Windows fallback. On Wayland `wayland_clipboard` is used.
   pub clipboard: Option<arboard::Clipboard>,
+  /// Wall-clock baseline for animation timing. All animated images
+  /// share one clock so frame switches are synchronized.
+  pub anim_start: Instant,
+  /// Earliest "next animation frame" deadline among visible images,
+  /// computed at the end of `redraw()`. Drives `ControlFlow::WaitUntil`
+  /// in `about_to_wait`. `None` when nothing on screen is animating.
+  pub anim_next_deadline: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -191,9 +207,26 @@ fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
 }
 
 impl ApplicationHandler<AppEvent> for App {
+  fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    // `WaitUntil` woke us up — schedule a redraw so the next animation
+    // frame paints. Other StartCauses (Init, WaitCancelled, Poll) are
+    // either unreachable here or don't need a redraw.
+    if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+      self.request_redraw();
+    }
+  }
+
+  fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    match self.anim_next_deadline {
+      Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
+      None => event_loop.set_control_flow(ControlFlow::Wait),
+    }
+  }
+
   fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
     match event {
       AppEvent::Reload => self.reload_from_disk(),
+      AppEvent::ImageReady => self.request_redraw(),
     }
   }
 
@@ -681,6 +714,24 @@ impl App {
     crate::trace!("reload_from_disk bytes={}", source.len());
     self.doc = crate::doc::parse(&source);
     self.selection = None;
+    // Refresh image dims for any new srcs and synchronously decode the
+    // new ones. Existing entries are left in place so already-loaded
+    // pixels stay cached. Reload happens in response to a user save,
+    // not the cold-launch path, so blocking briefly here is acceptable.
+    let new_paths = crate::images::collect_image_paths(&self.doc, self.base_dir.as_deref());
+    for p in &new_paths {
+      if self.images.get_dims(p).is_none() {
+        let dims = crate::images::read_dims(p);
+        self.images.insert_dims(p.clone(), dims);
+      }
+      if self.images.get_frames(p).is_none() {
+        if let Some(frames) = crate::images::decode_frames(p) {
+          self.images.set_frames(p, frames);
+        } else {
+          self.images.set_failed(p);
+        }
+      }
+    }
     self.relayout(self.current_surface_width());
     self.request_redraw();
   }
@@ -702,10 +753,39 @@ impl App {
       &theme,
       self.full_highlight,
       scale,
+      self.images.clone(),
+      self.base_dir.clone(),
     );
     let max = (laid.total_height - self.viewport_h()).max(0.0);
     self.scroll_y = self.scroll_y.clamp(0.0, max);
     self.laid = Some(laid);
+  }
+
+  /// Walk visible blocks; for each animated image, ask the store when
+  /// its next frame transition is, and return the soonest among them.
+  /// `None` means nothing visible is animating, so the loop can sleep
+  /// indefinitely (`ControlFlow::Wait`).
+  fn compute_next_anim_deadline(&self, now: Instant, elapsed_ms: u128) -> Option<Instant> {
+    let laid = self.laid.as_ref()?;
+    let view_h = self.viewport_h();
+    let mut earliest_ms: Option<u32> = None;
+    for block in &laid.blocks {
+      let by = block.y - self.scroll_y;
+      if by + block.h < 0.0 || by > view_h {
+        continue;
+      }
+      let LaidKind::Image { path, .. } = &block.kind else {
+        continue;
+      };
+      let Some(p) = path.as_ref() else { continue };
+      let Some((frames, total_ms)) = self.images.get_frames(p) else {
+        continue;
+      };
+      if let Some(ms) = crate::images::ms_until_next_frame(&frames, total_ms, elapsed_ms) {
+        earliest_ms = Some(earliest_ms.map_or(ms, |e| e.min(ms)));
+      }
+    }
+    earliest_ms.map(|ms| now + Duration::from_millis(ms as u64))
   }
 
   fn current_surface_width(&self) -> f32 {
@@ -898,11 +978,20 @@ impl App {
     }
 
     let theme = Theme::select(self.dark);
+    let now = Instant::now();
+    let anim_elapsed_ms = now.saturating_duration_since(self.anim_start).as_millis();
     let mut buffer = surface.buffer_mut().expect("buffer_mut");
     let (fw, fh) = self.surface_size;
     let mut frame = Frame::new(&mut buffer, fw, fh);
     if let Some(laid) = self.laid.as_ref() {
-      self.painter.paint_doc(&mut frame, laid, &theme, self.scroll_y);
+      self.painter.paint_doc(
+        &mut frame,
+        laid,
+        &theme,
+        self.scroll_y,
+        &self.images,
+        anim_elapsed_ms,
+      );
     } else {
       self.painter.paint_blank(&mut frame, &theme);
     }
@@ -923,6 +1012,15 @@ impl App {
 
     drop(frame);
     buffer.present().expect("present");
+
+    // Recompute the earliest animation deadline among visible images.
+    // `about_to_wait` reads `anim_next_deadline` to set the control
+    // flow. Skip the walk entirely if no image in the doc is animated.
+    self.anim_next_deadline = if self.images.has_animations() {
+      self.compute_next_anim_deadline(now, anim_elapsed_ms)
+    } else {
+      None
+    };
 
     if !self.painted_once {
       crate::trace!("first_present");
