@@ -46,6 +46,10 @@ pub enum Block {
     rows: Vec<Vec<Vec<Inline>>>,
   },
   Footnotes(Vec<FootnoteDef>),
+  Image {
+    src: String,
+    alt: String,
+  },
 }
 
 #[derive(Debug)]
@@ -86,7 +90,38 @@ pub fn parse(md: &str) -> Doc {
   for ev in parser {
     b.feed(ev);
   }
-  Doc { blocks: b.finish() }
+  let mut blocks = b.finish();
+  promote_image_paragraphs(&mut blocks);
+  Doc { blocks }
+}
+
+/// Promote a paragraph whose only inline content is a single image to a
+/// `Block::Image`. This is the canonical "image-as-figure" pattern in
+/// markdown — `![alt](url)` on its own line — and the only image
+/// presentation we render at block size in v1. Inline images mixed
+/// with text continue to render as alt-text in their paragraph.
+fn promote_image_paragraphs(blocks: &mut Vec<Block>) {
+  for block in blocks.iter_mut() {
+    if let Block::Quote(inner) = block {
+      promote_image_paragraphs(inner);
+    } else if let Block::List { items, .. } = block {
+      for item in items.iter_mut() {
+        promote_image_paragraphs(&mut item.blocks);
+      }
+    } else if let Block::Footnotes(defs) = block {
+      for def in defs.iter_mut() {
+        promote_image_paragraphs(&mut def.blocks);
+      }
+    }
+  }
+  for block in blocks.iter_mut() {
+    if let Block::Paragraph(inlines) = block {
+      if let [Inline::Image { src, alt }] = inlines.as_slice() {
+        let (src, alt) = (src.clone(), alt.clone());
+        *block = Block::Image { src, alt };
+      }
+    }
+  }
 }
 
 #[derive(Default)]

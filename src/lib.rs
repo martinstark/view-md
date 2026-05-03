@@ -1,6 +1,7 @@
 pub mod app;
 pub mod doc;
 pub mod highlight;
+pub mod images;
 pub mod inline;
 pub mod layout;
 pub mod licenses;
@@ -32,6 +33,10 @@ pub enum AppEvent {
   /// A file the user passed `--watch` for has changed on disk; re-read,
   /// reparse, relayout, redraw.
   Reload,
+  /// One of the inline images finished decoding on the bg thread; just
+  /// request a redraw — dimensions were known at parse time so layout
+  /// is unchanged.
+  ImageReady,
 }
 
 /// Number of background FontSystems used for parallel block shaping in
@@ -49,7 +54,7 @@ const N_LAYOUT_WORKERS: usize = 2;
 const INITIAL_W: f32 = 920.0;
 const INITIAL_H: f32 = 1100.0;
 
-pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
+pub fn run(source: String, title: String, watch_path: Option<PathBuf>, base_dir: Option<PathBuf>) {
   crate::trace!("run_start");
 
   // Build worker FontSystems on a background thread so the ~1ms cost
@@ -65,6 +70,19 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
 
   let doc = crate::doc::parse(&source);
   crate::trace!("doc_parsed");
+
+  // Image dimensions need to be known before layout so that block-image
+  // boxes get the right size and there's no layout shift when pixels
+  // arrive from the bg decoder. Header-only reads are µs even for
+  // multi-MB sources, so doing this on the main thread before kicking
+  // off layout is fine; full pixel decode runs asynchronously below.
+  let images = Arc::new(crate::images::ImageStore::new());
+  let image_paths = crate::images::collect_image_paths(&doc, base_dir.as_deref());
+  for p in &image_paths {
+    let dims = crate::images::read_dims(p);
+    images.insert_dims(p.clone(), dims);
+  }
+  crate::trace!("image_dims_read n={}", image_paths.len());
 
   let prefs = crate::state::load();
   let dark = prefs.theme.unwrap_or_else(detect_dark);
@@ -119,6 +137,8 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
   let theme = Theme::select(dark);
   let ready_for_layout = highlight_ready.clone();
   let assumed_viewport_h = INITIAL_H * assumed_dpi_scale.max(1.0);
+  let images_for_spec = images.clone();
+  let base_dir_for_spec = base_dir.clone();
   let layout_handle = std::thread::spawn(
     move || -> SpecResult {
       let mut fs = fs;
@@ -137,6 +157,8 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
         &theme,
         full,
         assumed_scale,
+        images_for_spec,
+        base_dir_for_spec,
       );
       crate::trace!("speculative_layout_done");
       // Pre-warm the swash glyph cache for the visible viewport in
@@ -173,6 +195,13 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
     crate::trace!("watcher_spawned");
   }
 
+  if !image_paths.is_empty() {
+    let proxy = event_loop.create_proxy();
+    let store = images.clone();
+    let paths = image_paths.clone();
+    std::thread::spawn(move || decode_images(paths, store, proxy));
+  }
+
   // Defer `layout_handle.join()` to inside `App::resumed` (item T1.5):
   // the join now happens *after* create_window+surface init so bg layout
   // overlaps with Wayland init on the main thread. App is constructed
@@ -182,6 +211,8 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
     wayland_clipboard: None,
     title,
     watch_path,
+    base_dir,
+    images: images.clone(),
     doc: Doc { blocks: Vec::new() },
     painter: Painter::with_cache(empty_font_system(), SwashCache::new()),
     layout_workers: Vec::new(),
@@ -206,6 +237,8 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
     modifiers: Default::default(),
     dpi_scale: 1.0,
     clipboard: None,
+    anim_start: std::time::Instant::now(),
+    anim_next_deadline: None,
   };
   event_loop.run_app(&mut app).expect("run_app");
 }
@@ -224,6 +257,45 @@ fn detect_dark() -> bool {
     return v == "dark";
   }
   true
+}
+
+/// Decode each image's pixels in document order so the above-the-fold
+/// image gets a redraw first. Each decode posts `AppEvent::ImageReady`,
+/// which `App::user_event` turns into a redraw — no relayout, since
+/// dimensions were locked in synchronously at parse time.
+fn decode_images(
+  paths: Vec<PathBuf>,
+  store: Arc<crate::images::ImageStore>,
+  proxy: winit::event_loop::EventLoopProxy<AppEvent>,
+) {
+  for path in paths {
+    if store.get_frames(&path).is_some() {
+      continue;
+    }
+    crate::trace!("image_decode_start {}", path.display());
+    let mut count = 0u32;
+    let path_for_cb = path.clone();
+    let store_for_cb = store.clone();
+    let proxy_for_cb = proxy.clone();
+    let ok = crate::images::decode_streaming(&path, move |f| {
+      store_for_cb.append_frame(&path_for_cb, f);
+      count += 1;
+      if count == 1 {
+        crate::trace!("image_first_frame {}", path_for_cb.display());
+      }
+      // Coalescing happens in winit: many request_redraw calls collapse
+      // to one RedrawRequested event per frame, so per-frame posting is
+      // cheap even on a 1000-frame webp.
+      let _ = proxy_for_cb.send_event(AppEvent::ImageReady);
+    });
+    if ok {
+      crate::trace!("image_decode_done {}", path.display());
+    } else {
+      store.set_failed(&path);
+      crate::trace!("image_decode_failed {}", path.display());
+      let _ = proxy.send_event(AppEvent::ImageReady);
+    }
+  }
 }
 
 /// Watches the parent directory of `path` (so editor rename-replace saves
