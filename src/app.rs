@@ -26,6 +26,13 @@ use crate::theme::Theme;
 /// init runs in parallel with the bg layout+warm work (item T1.5).
 pub type SpecResult = (Doc, FontSystem, Vec<FontSystem>, LaidDoc, bool, SwashCache);
 
+// Used by the resize-anchor heuristic to decide whether a heading is
+// "near enough" to viewport top to be the snap target. Approximates the
+// body line-height; doesn't need to match exactly — it's a heuristic
+// distance threshold.
+const BODY_FS_APPROX: f32 = 16.0;
+const BODY_LH_APPROX: f32 = 1.55;
+
 pub const ZOOM_MIN: f32 = 0.5;
 pub const ZOOM_MAX: f32 = 3.0;
 pub const ZOOM_STEP: f32 = 0.1;
@@ -95,6 +102,27 @@ pub struct HitPoint {
   pub cursor: Cursor,
 }
 
+/// Logical pointer at the viewport top, captured before a relayout so
+/// scroll position can be restored to the same content reference after
+/// reflow (item: resize / zoom / dpi anchor preservation).
+///
+/// `block_idx` is into `LaidDoc.blocks`; stable across relayouts because
+/// the source `doc.blocks` doesn't change. `block_y_offset` is a fallback
+/// pixel offset used when the block has no Buffer (Rule, Bar, TaskBox).
+///
+/// For Text/CodeBlock blocks we capture a `cosmic_text::Cursor` at the
+/// viewport-top line and a `residual` so we can restore at sub-line
+/// precision after the buffer re-shapes against a new width.
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollAnchor {
+  pub block_idx: usize,
+  pub block_y_offset: f32,
+  pub cursor: Option<Cursor>,
+  /// Pixel offset from the cursor's run top to the viewport top at
+  /// capture time. Carries the precise within-line scroll position.
+  pub residual: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Selection {
   pub anchor: HitPoint,
@@ -116,6 +144,35 @@ impl Selection {
     let (a, b) = self.ordered();
     a.block_idx == b.block_idx && a.cursor.line == b.cursor.line && a.cursor.index == b.cursor.index
   }
+}
+
+/// Find the y-coordinate (within `buf`'s coordinate space — i.e., 0 at
+/// the top of the buffer's content area) of the run that contains the
+/// given cursor's `(line, index)`. Used by the resize anchor restore
+/// path to put the same line of text back at the same screen y after
+/// the buffer re-shapes against a new width.
+fn cursor_y_in_buffer(buf: &cosmic_text::Buffer, cursor: &Cursor) -> Option<f32> {
+  // First pass: exact match — same source line AND cursor.index falls in
+  // this visual run's glyph byte range. Handles re-wrapped lines where
+  // a single source line spans multiple visual rows.
+  for run in buf.layout_runs() {
+    if run.line_i != cursor.line {
+      continue;
+    }
+    let first = run.glyphs.first().map_or(0, |g| g.start);
+    let last = run.glyphs.last().map_or(0, |g| g.end);
+    if cursor.index >= first && cursor.index <= last {
+      return Some(run.line_top);
+    }
+  }
+  // Fallback: any run on the same source line. Picks the first such
+  // run, which is the start of the source line in visual order.
+  for run in buf.layout_runs() {
+    if run.line_i == cursor.line {
+      return Some(run.line_top);
+    }
+  }
+  None
 }
 
 fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
@@ -244,13 +301,21 @@ impl ApplicationHandler for App {
           let (w, h) = (size.width.max(1), size.height.max(1));
           let _ = surface.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
           self.surface_size = (w, h);
+          let anchor = self.capture_scroll_anchor();
           self.relayout(w as f32);
+          if let Some(a) = anchor {
+            self.restore_scroll_anchor(a);
+          }
           self.request_redraw();
         }
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+        let anchor = self.capture_scroll_anchor();
         self.dpi_scale = scale_factor as f32;
         self.relayout(self.current_surface_width());
+        if let Some(a) = anchor {
+          self.restore_scroll_anchor(a);
+        }
         self.request_redraw();
       }
       WindowEvent::MouseWheel { delta, .. } => {
@@ -441,8 +506,12 @@ impl App {
     if (new_zoom - self.zoom).abs() < f32::EPSILON {
       return;
     }
+    let anchor = self.capture_scroll_anchor();
     self.zoom = new_zoom;
     self.relayout(self.current_surface_width());
+    if let Some(a) = anchor {
+      self.restore_scroll_anchor(a);
+    }
     self.persist();
     self.request_redraw();
   }
@@ -483,6 +552,105 @@ impl App {
 
   fn viewport_h(&self) -> f32 {
     self.surface_size.1 as f32
+  }
+
+  /// Capture the content reference at the viewport top so it can be
+  /// restored after a reflow (resize, dpi, zoom). Prefers a heading
+  /// within `2 × line-height` of the viewport top — gives a "snap to
+  /// heading" feel during resize. For Text / CodeBlock anchors also
+  /// captures a Cursor + sub-line residual so the same line of text
+  /// stays at the same screen y, even when re-wrapping shifts where
+  /// that line lands inside its block.
+  fn capture_scroll_anchor(&self) -> Option<ScrollAnchor> {
+    let laid = self.laid.as_ref()?;
+    if laid.blocks.is_empty() {
+      return None;
+    }
+    let scroll_y = self.scroll_y;
+
+    // First block whose footprint reaches viewport top.
+    let topmost_idx = laid
+      .blocks
+      .iter()
+      .position(|b| b.y + b.h > scroll_y)
+      .unwrap_or(laid.blocks.len() - 1);
+
+    // Heading-snap: prefer a heading within `snap_distance` (above OR
+    // below) of viewport top so resize feels like the heading is
+    // pinned in place.
+    let snap_distance = (BODY_FS_APPROX * BODY_LH_APPROX) * self.zoom * self.dpi_scale.max(1.0);
+    let viewport_top = scroll_y;
+    let mut anchor_idx = topmost_idx;
+    for &h_idx in &laid.heading_block_idxs {
+      let block = &laid.blocks[h_idx];
+      let dist = block.y - viewport_top;
+      if dist > snap_distance {
+        // headings are y-sorted via the iteration order — past the snap zone
+        break;
+      }
+      if dist.abs() <= snap_distance {
+        anchor_idx = h_idx;
+        break;
+      }
+    }
+
+    let block = &laid.blocks[anchor_idx];
+    let block_y_offset = scroll_y - block.y;
+
+    // Sub-block precision: for Text/CodeBlock, hit-test the buffer
+    // at viewport-top to get a cursor, and capture the residual pixel
+    // offset from that cursor's run top to viewport top.
+    let (buffer, inner_offset) = match &block.kind {
+      LaidKind::Text { buffer, .. } => (Some(buffer), 0.0),
+      LaidKind::CodeBlock { buffer, pad_y, .. } => (Some(buffer), *pad_y),
+      _ => (None, 0.0),
+    };
+    let (cursor, residual) = if let Some(buf) = buffer {
+      let y_in_block = scroll_y - block.y - inner_offset;
+      let probe_y = y_in_block.max(0.0);
+      if let Some(cur) = buf.hit(0.0, probe_y) {
+        let cur_y = cursor_y_in_buffer(buf, &cur).unwrap_or(probe_y);
+        (Some(cur), y_in_block - cur_y)
+      } else {
+        (None, 0.0)
+      }
+    } else {
+      (None, 0.0)
+    };
+
+    Some(ScrollAnchor {
+      block_idx: anchor_idx,
+      block_y_offset,
+      cursor,
+      residual,
+    })
+  }
+
+  /// Restore scroll position from a previously-captured anchor. Uses
+  /// the cursor + residual when available (sub-line precision); falls
+  /// back to the raw block_y_offset for blocks without buffers.
+  fn restore_scroll_anchor(&mut self, a: ScrollAnchor) {
+    let Some(laid) = self.laid.as_ref() else {
+      return;
+    };
+    let Some(block) = laid.blocks.get(a.block_idx) else {
+      return;
+    };
+    let target = if let Some(cursor) = a.cursor {
+      let (buffer, inner_offset) = match &block.kind {
+        LaidKind::Text { buffer, .. } => (Some(buffer), 0.0),
+        LaidKind::CodeBlock { buffer, pad_y, .. } => (Some(buffer), *pad_y),
+        _ => (None, 0.0),
+      };
+      buffer
+        .and_then(|buf| cursor_y_in_buffer(buf, &cursor))
+        .map(|cy| block.y + inner_offset + cy + a.residual)
+        .unwrap_or_else(|| block.y + a.block_y_offset)
+    } else {
+      block.y + a.block_y_offset
+    };
+    let max = (laid.total_height - self.viewport_h()).max(0.0);
+    self.scroll_y = target.clamp(0.0, max);
   }
 
   fn relayout(&mut self, surface_w: f32) {
