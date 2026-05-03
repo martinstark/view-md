@@ -14,7 +14,7 @@ fn usage() -> ! {
   eprintln!(
     "vmd — minimal native markdown viewer\n\
          \n\
-         usage: vmd [flags] <file.md | ->\n\
+         usage: vmd [flags] <file.md[#anchor] | ->\n\
          \n\
          flags:\n\
          \x20\x20--watch        reload the file on disk changes\n\
@@ -74,18 +74,25 @@ fn main() -> ExitCode {
     return ExitCode::from(2);
   }
 
-  let (source, title, watch_path, base_dir) = if from_stdin {
+  let (source, title, watch_path, base_dir, anchor) = if from_stdin {
     let mut buf = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
       eprintln!("vmd: stdin: {e}");
       return ExitCode::from(1);
     }
-    (buf, String::from("stdin"), None, None)
-  } else if let Some(path) = path {
-    let p = match std::fs::canonicalize(&path) {
+    (buf, String::from("stdin"), None, None, None)
+  } else if let Some(arg) = path {
+    // Split off `#anchor` from the path arg before touching the
+    // filesystem. `vmd file.md#section` opens the file and scrolls
+    // to the matching heading.
+    let (path_str, anchor) = match arg.rsplit_once('#') {
+      Some((p, a)) if !a.is_empty() => (p.to_string(), Some(a.to_string())),
+      _ => (arg, None),
+    };
+    let p = match std::fs::canonicalize(&path_str) {
       Ok(p) => p,
       Err(e) => {
-        eprintln!("vmd: {path}: {e}");
+        eprintln!("vmd: {path_str}: {e}");
         return ExitCode::from(1);
       }
     };
@@ -98,13 +105,13 @@ fn main() -> ExitCode {
     };
     let title = file_title(&p);
     let base_dir = p.parent().map(|d| d.to_path_buf());
-    (body, title, watch.then_some(p), base_dir)
+    (body, title, watch.then_some(p), base_dir, anchor)
   } else {
     usage();
   };
 
   crate::trace!("source_read");
-  vmd::run(source, title, watch_path, base_dir);
+  vmd::run(source, title, watch_path, base_dir, anchor);
   ExitCode::SUCCESS
 }
 

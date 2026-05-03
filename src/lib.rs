@@ -54,7 +54,13 @@ const N_LAYOUT_WORKERS: usize = 2;
 const INITIAL_W: f32 = 920.0;
 const INITIAL_H: f32 = 1100.0;
 
-pub fn run(source: String, title: String, watch_path: Option<PathBuf>, base_dir: Option<PathBuf>) {
+pub fn run(
+  source: String,
+  title: String,
+  watch_path: Option<PathBuf>,
+  base_dir: Option<PathBuf>,
+  anchor: Option<String>,
+) {
   crate::trace!("run_start");
 
   // Build worker FontSystems on a background thread so the ~1ms cost
@@ -212,6 +218,7 @@ pub fn run(source: String, title: String, watch_path: Option<PathBuf>, base_dir:
     title,
     watch_path,
     base_dir,
+    pending_anchor: anchor,
     images: images.clone(),
     doc: Doc { blocks: Vec::new() },
     painter: Painter::with_cache(empty_font_system(), SwashCache::new()),
