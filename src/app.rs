@@ -62,6 +62,10 @@ pub struct App {
   /// Parent directory of the loaded markdown file, used to resolve
   /// relative image paths. `None` for stdin (relative srcs unresolvable).
   pub base_dir: Option<PathBuf>,
+  /// Heading anchor parsed from `vmd file.md#section`. Consumed once,
+  /// after the first relayout, by `apply_pending_anchor()`. `None` if
+  /// the user didn't supply one or after it's been applied.
+  pub pending_anchor: Option<String>,
   /// Cache of image dimensions + decoded pixels, shared with the bg
   /// decoder thread. Layout reads dims; paint reads pixels and falls
   /// back to a placeholder rect when not yet present.
@@ -300,6 +304,11 @@ impl ApplicationHandler<AppEvent> for App {
       self.relayout(w as f32);
     }
     crate::trace!("layout_ready");
+
+    // Anchor scroll happens here, after layout is in place but before
+    // first paint, so the user lands directly on the section without
+    // a visible jump.
+    self.apply_pending_anchor();
 
     // The syntect_wait exists to avoid the placeholder→highlighted flash
     // on first paint. That flash is only user-visible if a placeholder
@@ -788,6 +797,37 @@ impl App {
     earliest_ms.map(|ms| now + Duration::from_millis(ms as u64))
   }
 
+  /// Resolve the URL fragment passed as `vmd file.md#section`: walk
+  /// headings in document order, slugify each, scroll to the first
+  /// match. Run once after the first layout; clears `pending_anchor`
+  /// either way so resizes don't keep snapping back. Silent on miss.
+  fn apply_pending_anchor(&mut self) {
+    let Some(anchor) = self.pending_anchor.take() else {
+      return;
+    };
+    let target = slugify(&anchor);
+    let Some(laid) = self.laid.as_ref() else {
+      return;
+    };
+    let mut hi = 0usize;
+    for block in &self.doc.blocks {
+      if let crate::doc::Block::Heading { inlines, .. } = block {
+        let text = crate::doc::flatten_text(inlines);
+        if slugify(&text) == target {
+          if let Some(y) = laid.heading_ys.get(hi) {
+            let max = (laid.total_height - self.viewport_h()).max(0.0);
+            self.scroll_y =
+              (*y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+            crate::trace!("anchor_jump '{}' -> y={}", anchor, *y);
+          }
+          return;
+        }
+        hi += 1;
+      }
+    }
+    crate::trace!("anchor_miss '{}'", anchor);
+  }
+
   fn current_surface_width(&self) -> f32 {
     let w = self.surface_size.0;
     if w == 0 { 920.0 } else { w as f32 }
@@ -1146,4 +1186,30 @@ fn block_full_text(block: &crate::layout::LaidBlock) -> String {
   };
   let lines = buffer_text_lines(buf);
   lines.join("\n")
+}
+
+/// Convert heading text to a GitHub-style anchor slug:
+///   "Foo Bar"      → "foo-bar"
+///   "C++ in 5min"  → "c-in-5min"
+///   "  spaces  "   → "spaces"
+/// Lowercase, ASCII-alphanumeric and `-` survive, everything else
+/// becomes a hyphen, then collapse runs of hyphens and trim leading
+/// and trailing hyphens. Matches the slugs `vmd file.md#section`
+/// users will type from a TOC or another viewer.
+pub fn slugify(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let mut last_hyphen = true; // suppress leading hyphens
+  for c in s.chars() {
+    if c.is_ascii_alphanumeric() {
+      out.push(c.to_ascii_lowercase());
+      last_hyphen = false;
+    } else if !last_hyphen {
+      out.push('-');
+      last_hyphen = true;
+    }
+  }
+  while out.ends_with('-') {
+    out.pop();
+  }
+  out
 }
