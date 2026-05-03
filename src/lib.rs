@@ -246,6 +246,7 @@ pub fn run(
     clipboard: None,
     anim_start: std::time::Instant::now(),
     anim_next_deadline: None,
+    empty_reload_deadline: None,
   };
   event_loop.run_app(&mut app).expect("run_app");
 }

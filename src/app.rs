@@ -121,6 +121,13 @@ pub struct App {
   /// computed at the end of `redraw()`. Drives `ControlFlow::WaitUntil`
   /// in `about_to_wait`. `None` when nothing on screen is animating.
   pub anim_next_deadline: Option<Instant>,
+  /// Set when a `--watch` reload observed an empty file while the
+  /// current doc has content. We defer applying that state by a short
+  /// window so transient truncate-then-write saves don't blank the
+  /// view; a follow-up event with content cancels the deadline. If
+  /// the timer fires with the file still empty, the erase is genuine
+  /// and we apply it.
+  pub empty_reload_deadline: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -212,16 +219,24 @@ fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
 
 impl ApplicationHandler<AppEvent> for App {
   fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-    // `WaitUntil` woke us up — schedule a redraw so the next animation
-    // frame paints. Other StartCauses (Init, WaitCancelled, Poll) are
-    // either unreachable here or don't need a redraw.
+    // `WaitUntil` woke us up: an animation deadline, an empty-reload
+    // recheck, or both. Run the empty-recheck (which may apply a
+    // deferred reload) and request a redraw — the redraw is harmless
+    // when only the empty-recheck fired with no actual change.
     if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+      self.check_empty_deadline();
       self.request_redraw();
     }
   }
 
   fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-    match self.anim_next_deadline {
+    let earliest = match (self.anim_next_deadline, self.empty_reload_deadline) {
+      (Some(a), Some(e)) => Some(a.min(e)),
+      (Some(a), None) => Some(a),
+      (None, Some(e)) => Some(e),
+      (None, None) => None,
+    };
+    match earliest {
       Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
       None => event_loop.set_control_flow(ControlFlow::Wait),
     }
@@ -712,6 +727,12 @@ impl App {
   /// On a missing file (e.g., editor mid-rename) we silently keep the
   /// current contents — the next event after the rename completes
   /// will trigger another reload.
+  /// Window before a deferred "empty file" reload is treated as a
+  /// genuine erase. Editors that truncate-then-write produce a brief
+  /// empty moment (a few ms typically); 150ms covers that without
+  /// making a real erase feel laggy.
+  const EMPTY_RECHECK_MS: u64 = 150;
+
   fn reload_from_disk(&mut self) {
     let Some(path) = self.watch_path.as_ref() else {
       return;
@@ -720,18 +741,49 @@ impl App {
       Ok(s) => s,
       Err(_) => return,
     };
-    // Some editors truncate-then-write on save (vs atomic rename),
-    // and notify fires events for both the truncate and the final
-    // write. The truncate moment reads as an empty file. If we
-    // reload then, parse produces 0 blocks → relayout shrinks
-    // total_height to zero → scroll_y clamps to 0, and the next
-    // (real) reload's anchor capture comes from the now-empty
-    // layout, restoring to top. Skip the transient empty read; the
-    // follow-up event with full content will land cleanly.
+    // Transient-empty handling: editors that truncate-then-write fire
+    // a notify event while the file is briefly empty, before the real
+    // content lands. If we apply that state immediately the doc
+    // collapses and scroll position is lost. Defer applying empty
+    // for a short window — a follow-up event with content cancels
+    // the deadline (the non-empty branch below); if the timer
+    // expires the erase is genuine and `check_empty_deadline` will
+    // re-read and apply.
     if source.trim().is_empty() && !self.doc.blocks.is_empty() {
-      crate::trace!("reload_skipped (transient empty file)");
+      let deadline =
+        Instant::now() + Duration::from_millis(Self::EMPTY_RECHECK_MS);
+      self.empty_reload_deadline = Some(deadline);
+      crate::trace!(
+        "reload_deferred (empty, recheck in {}ms)",
+        Self::EMPTY_RECHECK_MS
+      );
       return;
     }
+    self.empty_reload_deadline = None;
+    self.apply_reload(source);
+  }
+
+  /// Called from `new_events` when a `WaitUntil` deadline fires; if
+  /// the empty-recheck deadline elapsed, re-read the file once more
+  /// and apply whatever's there (still empty → genuine erase, now
+  /// has content → late write that we apply normally).
+  fn check_empty_deadline(&mut self) {
+    let Some(deadline) = self.empty_reload_deadline else {
+      return;
+    };
+    if Instant::now() < deadline {
+      return;
+    }
+    self.empty_reload_deadline = None;
+    let Some(path) = self.watch_path.as_ref() else {
+      return;
+    };
+    let source = std::fs::read_to_string(path).unwrap_or_default();
+    crate::trace!("reload_after_recheck bytes={}", source.len());
+    self.apply_reload(source);
+  }
+
+  fn apply_reload(&mut self, source: String) {
     crate::trace!("reload_from_disk bytes={}", source.len());
     self.doc = crate::doc::parse(&source);
     self.selection = None;
