@@ -10,6 +10,7 @@ pub mod text;
 pub mod theme;
 pub mod trace;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,6 +22,17 @@ use crate::doc::Doc;
 use crate::layout::layout_parallel;
 use crate::paint::{Painter, warm_glyph_cache_parallel};
 use crate::theme::Theme;
+
+/// User events the winit event loop dispatches to `App::user_event`. The
+/// loop is always typed against this enum even when no events are sent
+/// (i.e. when not watching), so the dispatch path is identical and
+/// adding a watcher later doesn't change the loop type.
+#[derive(Debug, Clone)]
+pub enum AppEvent {
+  /// A file the user passed `--watch` for has changed on disk; re-read,
+  /// reparse, relayout, redraw.
+  Reload,
+}
 
 /// Number of background FontSystems used for parallel block shaping in
 /// `layout_parallel`. With this, layout runs on `1 + N_LAYOUT_WORKERS`
@@ -37,7 +49,7 @@ const N_LAYOUT_WORKERS: usize = 2;
 const INITIAL_W: f32 = 920.0;
 const INITIAL_H: f32 = 1100.0;
 
-pub fn run(source: String, title: String) {
+pub fn run(source: String, title: String, watch_path: Option<PathBuf>) {
   crate::trace!("run_start");
 
   // Build worker FontSystems on a background thread so the ~1ms cost
@@ -150,8 +162,16 @@ pub fn run(source: String, title: String) {
     },
   );
 
-  let event_loop = EventLoop::new().expect("event loop");
+  let event_loop = EventLoop::<AppEvent>::with_user_event()
+    .build()
+    .expect("event loop");
   crate::trace!("event_loop_created");
+
+  if let Some(path) = watch_path.clone() {
+    let proxy = event_loop.create_proxy();
+    std::thread::spawn(move || spawn_watcher(path, proxy));
+    crate::trace!("watcher_spawned");
+  }
 
   // Defer `layout_handle.join()` to inside `App::resumed` (item T1.5):
   // the join now happens *after* create_window+surface init so bg layout
@@ -161,6 +181,7 @@ pub fn run(source: String, title: String) {
   let mut app = App {
     wayland_clipboard: None,
     title,
+    watch_path,
     doc: Doc { blocks: Vec::new() },
     painter: Painter::with_cache(empty_font_system(), SwashCache::new()),
     layout_workers: Vec::new(),
@@ -203,4 +224,48 @@ fn detect_dark() -> bool {
     return v == "dark";
   }
   true
+}
+
+/// Watches the parent directory of `path` (so editor rename-replace saves
+/// are seen) and posts `AppEvent::Reload` whenever an event touches the
+/// target file. Coalescing/debouncing is left to the user_event handler:
+/// re-reading a stable file twice is microseconds and idempotent.
+fn spawn_watcher(path: PathBuf, proxy: winit::event_loop::EventLoopProxy<AppEvent>) {
+  use notify::{Config, EventKind, RecursiveMode, Watcher};
+  let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+  let target = path.canonicalize().unwrap_or(path);
+  let proxy_clone = proxy.clone();
+  let target_clone = target.clone();
+  let mut watcher = match notify::RecommendedWatcher::new(
+    move |res: notify::Result<notify::Event>| {
+      let Ok(ev) = res else { return };
+      if !matches!(
+        ev.kind,
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+      ) {
+        return;
+      }
+      let touches = ev.paths.iter().any(|p| {
+        p == &target_clone || p.canonicalize().ok().as_deref() == Some(&target_clone)
+      });
+      if touches {
+        crate::trace!("watcher_event {:?} {:?}", ev.kind, ev.paths);
+        let _ = proxy_clone.send_event(AppEvent::Reload);
+      }
+    },
+    Config::default(),
+  ) {
+    Ok(w) => w,
+    Err(e) => {
+      eprintln!("vmd: watcher init failed: {e}");
+      return;
+    }
+  };
+  if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+    eprintln!("vmd: watch {}: {e}", dir.display());
+    return;
+  }
+  // Block forever; the watcher delivers events via the closure above.
+  std::thread::park();
+  drop(watcher);
 }

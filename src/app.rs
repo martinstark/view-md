@@ -1,4 +1,5 @@
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +15,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::AppEvent;
 use crate::doc::Doc;
 use crate::layout::{LaidDoc, LaidKind, layout_parallel};
 use crate::paint::{Frame, Painter};
@@ -50,6 +52,11 @@ pub struct App {
   /// `None` on non-Wayland platforms.
   pub wayland_clipboard: Option<smithay_clipboard::Clipboard>,
   pub title: String,
+  /// Set when launched with `--watch <file>`. The watcher thread in
+  /// `lib::spawn_watcher` posts `AppEvent::Reload` on disk changes,
+  /// and `user_event` re-reads this path. `None` for stdin or
+  /// non-watched runs.
+  pub watch_path: Option<PathBuf>,
   pub doc: Doc,
   pub painter: Painter,
   /// Extra FontSystems used for parallel block shaping in
@@ -183,7 +190,13 @@ fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
   }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+  fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+    match event {
+      AppEvent::Reload => self.reload_from_disk(),
+    }
+  }
+
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     if self.window.is_some() {
       return;
@@ -651,6 +664,25 @@ impl App {
     };
     let max = (laid.total_height - self.viewport_h()).max(0.0);
     self.scroll_y = target.clamp(0.0, max);
+  }
+
+  /// Re-read the watched file, reparse, relayout, and request a redraw.
+  /// On a missing file (e.g., editor mid-rename) we silently keep the
+  /// current contents — the next event after the rename completes
+  /// will trigger another reload.
+  fn reload_from_disk(&mut self) {
+    let Some(path) = self.watch_path.as_ref() else {
+      return;
+    };
+    let source = match std::fs::read_to_string(path) {
+      Ok(s) => s,
+      Err(_) => return,
+    };
+    crate::trace!("reload_from_disk bytes={}", source.len());
+    self.doc = crate::doc::parse(&source);
+    self.selection = None;
+    self.relayout(self.current_surface_width());
+    self.request_redraw();
   }
 
   fn relayout(&mut self, surface_w: f32) {
