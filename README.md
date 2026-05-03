@@ -1,12 +1,21 @@
-# vmd
+# view md
 
-Minimal native markdown viewer. Single static binary, no webview, cold-launches in
-~15 to 30 ms depending on doc size, vs ~200 ms for the Tauri webview it replaces.
+Speedy native markdown viewer. 
+
+Render a markdown file in a single frame at 120 fps (<8.3 ms).
+
+Vim-like keybinds. Light and dark themes.
+
+![demo](assets/demo.gif)
+
+## Here be AI
+
+For your own sanity, do not read the source code.
 
 ## Build
 
     cargo build --release
-    ./install.sh   # symlinks target/release/vmd into ~/.local/bin and installs the .desktop entry
+    ./install.sh   # symlink target/release/vmd to ~/.local/bin, installs .desktop entry
 
 ## Use
 
@@ -14,9 +23,8 @@ Minimal native markdown viewer. Single static binary, no webview, cold-launches 
     vmd -                   # read from stdin
     vmd --licenses          # print vmd's license + bundled fonts + all third-party deps
     vmd --trace             # print timing breakdown
-    VMD_TRACE=1 vmd file.md  # same as --trace
 
-In the app, `?` shows the full keybind list.
+In the app, `?` shows keybinds.
 
 ## License
 
@@ -29,7 +37,7 @@ To regenerate `THIRD-PARTY-LICENSES.md` after a `cargo update` or new dep:
     cargo install cargo-about --features cli   # one-time
     cargo about generate about.hbs > THIRD-PARTY-LICENSES.md
 
-## Bundled fonts
+## Bundled Fonts
 
 vmd embeds the following fonts to skip fontconfig at startup. Both are under
 the SIL Open Font License 1.1. See `vmd --licenses` or the files in `assets/`
@@ -38,39 +46,30 @@ for the full text.
 - Inter (Regular, Bold, Italic, BoldItalic). © 2016 The Inter Project Authors. https://github.com/rsms/inter
 - JetBrains Mono (Regular, Bold, Italic). © 2020 JetBrains s.r.o. https://github.com/JetBrains/JetBrainsMono
 
-## Stack
+## How it Stays Fast
 
-- `winit` 0.30 for windowing (Wayland-native on this setup)
-- `softbuffer` for the surface, `tiny-skia` for 2D raster. CPU only, no GPU init cost.
-- `cosmic-text` 0.19 for shaping and layout, with a bundled fontdb (no system scan).
-  OpenType features enabled: Inter `ss02` (disambiguates I/l/1), JetBrains Mono
-  `calt`/`liga` (programming ligatures: `->`, `=>`, `!=`, ...).
-- `pulldown-cmark` for parsing, `syntect` for code highlighting.
+Measured on a Ryzen 9 9800X3D, Wayland/SwayWM, against `examples/test.md`. Numbers scale with doc size. 
 
-## How it stays fast
+A typical README cold-launches inside one 120 Hz frame (<8.3 ms exec → present), with one caveat: if there are code blocks in the initial visible frame the launch waits for syntect to finish computing highlights to avoid a redraw. Worst case, this delays launch by one extra frame (~5 ms).
 
-Measured on a Ryzen 9 9800X3D, Wayland/sway, against `examples/test.md`. Numbers
-scale with doc size; the doc here is on the heavy side (5 code blocks, lists,
-tables, footnotes, ~270 lines). A typical README cold-launches in ~15 ms.
-
-- Bundled fonts. `cosmic_text::FontSystem::new()` scans system fonts via
-  fontdb (50 to 150 ms with ~10k fonts installed). Seven TTFs via
-  `include_bytes!` instead: ~1 ms.
-- CPU raster, not GPU. wgpu cold-init on NVIDIA Wayland costs 50 to 150 ms
-  of driver setup. softbuffer + tiny-skia into wl_shm skips it.
-- Defer syntect to frame 2. Frame 1 paints code blocks as plain monospace
-  with the same geometry; frame 2 swaps in highlighted buffers. Doing it
-  inline would block frame 1 for ~60 ms with 3 code blocks, ~100 ms with 5.
-- Parallel highlight precompute, one worker per block, spawned right after
-  parse. Different languages compile regexes independently, so N blocks
-  finish in roughly the time of the slowest single one rather than summed.
-  Bg threads run through the entire window-setup-to-first-paint path.
-- Memoize by `(lang, code, theme)`. Resize, zoom, and theme toggle hit the
-  cache (<1 ms) instead of re-running syntect (~60 ms+ each).
-- Active theme only at startup. The other theme fills lazily on first `t`,
-  a one-time compile that is cached after.
-- Tight per-glyph blend. We iterate `Buffer::layout_runs` directly and call
-  `SwashCache::with_pixels` per glyph, with a fast path in the blender for
-  the common opaque-destination case (skips post-blend premultiplication).
-- `VMD_TRACE=1 vmd file.md` prints per-stage timing. Every choice above
-  came from reading the trace.
+- Bundled fonts, zero-copy. Seven TTFs via `include_bytes!`, handed to
+  `fontdb` as `Source::Binary(Arc<…>)` — no per-`FontSystem` copy of
+  ~400 KB × 7 faces. Skips fontconfig (50 to 150 ms with ~10k fonts
+  installed)
+- mimalloc as global allocator. Shaping and layout churn through small
+  allocations; mimalloc handles them noticeably faster than the system
+  allocator
+- CPU raster, not GPU. `softbuffer` + `tiny-skia` into wl_shm. Skips
+  ~50 to 150 ms of wgpu/NVIDIA driver init that webviews and GPU
+  renderers pay on cold launch
+- Parse, then everything else in parallel. `pulldown-cmark` parses
+  synchronously (microseconds). After that, three pools spin up:
+    - Speculative layout + shape on a background thread
+    - Pre-warm the swash glyph cache for the visible viewport
+    - `syntect` highlight, bounded to four workers
+- Wait briefly for syntect before first paint, but only if code block
+  on first visible frame
+- Skip the `request_redraw` round-trip
+- Glyph raster via `swash.get_image()`
+- Memoize highlights by `(lang, code, theme)`
+- Active theme only at startup
