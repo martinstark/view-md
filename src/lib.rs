@@ -19,7 +19,7 @@ use winit::event_loop::EventLoop;
 use crate::app::{App, SpecResult};
 use crate::doc::Doc;
 use crate::layout::layout_parallel;
-use crate::paint::{Painter, warm_glyph_cache};
+use crate::paint::{Painter, warm_glyph_cache_parallel};
 use crate::theme::Theme;
 
 /// Number of background FontSystems used for parallel block shaping in
@@ -127,15 +127,24 @@ pub fn run(source: String, title: String) {
         assumed_scale,
       );
       crate::trace!("speculative_layout_done");
-      // Pre-warm the swash glyph cache for the visible viewport while
-      // we're still on the bg thread. The painter would otherwise
-      // rasterize all these glyphs inline during the first paint
-      // (~3-4ms on test.md). The cache_keys we generate reference this
-      // fs's font_ids, which match the painter's because all
-      // FontSystems load identical fonts in identical order
-      // (deterministic slotmap IDs — same reasoning as item 2).
+      // Pre-warm the swash glyph cache for the visible viewport in
+      // PARALLEL across `1 + N_LAYOUT_WORKERS` lanes (item B). Each lane
+      // uses its own SwashCache; after all done, worker caches drain
+      // into the main cache the painter will own. cache_key compatibility
+      // across FontSystems is the same property layout_parallel relies
+      // on (deterministic fontdb slotmap IDs).
       let mut swash = SwashCache::new();
-      warm_glyph_cache(&mut swash, &mut fs, &laid, assumed_viewport_h);
+      let mut worker_swashes: Vec<SwashCache> = (0..layout_workers.len())
+        .map(|_| SwashCache::new())
+        .collect();
+      warm_glyph_cache_parallel(
+        &mut swash,
+        &mut fs,
+        &mut layout_workers,
+        &mut worker_swashes,
+        &laid,
+        assumed_viewport_h,
+      );
       crate::trace!("speculative_warm_done");
       (doc, fs, layout_workers, laid, full, swash)
     },
