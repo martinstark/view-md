@@ -720,6 +720,18 @@ impl App {
       Ok(s) => s,
       Err(_) => return,
     };
+    // Some editors truncate-then-write on save (vs atomic rename),
+    // and notify fires events for both the truncate and the final
+    // write. The truncate moment reads as an empty file. If we
+    // reload then, parse produces 0 blocks → relayout shrinks
+    // total_height to zero → scroll_y clamps to 0, and the next
+    // (real) reload's anchor capture comes from the now-empty
+    // layout, restoring to top. Skip the transient empty read; the
+    // follow-up event with full content will land cleanly.
+    if source.trim().is_empty() && !self.doc.blocks.is_empty() {
+      crate::trace!("reload_skipped (transient empty file)");
+      return;
+    }
     crate::trace!("reload_from_disk bytes={}", source.len());
     self.doc = crate::doc::parse(&source);
     self.selection = None;
