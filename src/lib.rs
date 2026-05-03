@@ -110,21 +110,18 @@ pub fn run(source: String, title: String) {
   let layout_handle = std::thread::spawn(
     move || -> SpecResult {
       let mut fs = fs;
-      let layout_workers = layout_workers;
+      let mut layout_workers = layout_workers;
       let full = ready_for_layout.load(Ordering::Acquire);
-      // Run the speculative layout SEQUENTIALLY (no scoped sub-threads):
-      // the syntect precompute thread fans out to one OS thread per code
-      // block on a 16-thread CPU, so adding 2 more layout-worker threads
-      // costs ~2ms in syntect_precompute_done due to scheduler contention.
-      // The bg thread itself still parallelizes with the main thread's
-      // event-loop + window setup, which is the win for item 7. We pay
-      // ~3ms more inside this thread but it stays off the critical path
-      // because main is doing 3-4ms of work too.
+      // Spec layout runs in PARALLEL across `1 + N_LAYOUT_WORKERS` lanes.
+      // An earlier comment warned that this cost ~2ms in syntect contention
+      // pre-T6 (when shaping was ~2× heavier per block). With T6's mono
+      // fast-path the parallel window is much smaller and the contention
+      // re-measured as a net win. Item (A) on the post-T6 plan.
       let laid = layout_parallel(
         &doc,
         assumed_surface_w,
         &mut fs,
-        &mut [],
+        &mut layout_workers,
         &theme,
         full,
         assumed_scale,
