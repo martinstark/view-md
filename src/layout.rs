@@ -26,6 +26,8 @@ pub const LIST_INDENT: f32 = LIST_MARKER_W + LIST_MARKER_GAP;
 pub const LIST_ITEM_GAP: f32 = 4.0;
 pub const QUOTE_INDENT: f32 = 16.0;
 pub const QUOTE_BAR_W: f32 = 3.0;
+pub const CALLOUT_TITLE_GAP: f32 = BLOCK_GAP * 0.5;
+pub const CALLOUT_VPAD: f32 = 4.0;
 pub const TASK_BOX: f32 = 14.0;
 pub const CODE_PAD_X: f32 = 14.0;
 pub const CODE_PAD_Y: f32 = 12.0;
@@ -821,8 +823,13 @@ fn layout_list(
   (all, total)
 }
 
-fn layout_quote(
-  inner: &[Block],
+/// Shared callout primitive used by both `Block::Quote` and `Block::Alert`.
+/// One left bar + indented body, with an optional bold title row above the
+/// body. Quote = no title + muted bar. Alert = title + kind-colored bar.
+fn layout_callout(
+  blocks: &[Block],
+  title: Option<(&str, Color)>,
+  bar_color: SkColor,
   w: f32,
   x: f32,
   fs: &mut FontSystem,
@@ -833,70 +840,42 @@ fn layout_quote(
   let indent = QUOTE_INDENT * s;
   let inner_x = x + indent;
   let inner_w = (w - indent).max(80.0);
-  let (inner_laid, inner_h) = layout_blocks(inner, inner_w, inner_x, fs, theme, ctx, BLOCK_GAP * s);
-  let mut all: Vec<LaidBlock> = Vec::new();
-  all.push(LaidBlock {
-    y: 0.0,
-    h: inner_h,
-    x,
-    kind: LaidKind::Bar {
-      color: theme.quote_bar,
-      width: QUOTE_BAR_W * s,
-    },
-  });
-  all.extend(inner_laid);
-  (all, inner_h)
-}
 
-/// Lay out a GFM alert: a left bar in the kind's accent color, a bold
-/// title row in the same accent, and the body content indented and
-/// gapped from the title. Composed entirely from existing Bar + Text
-/// LaidKinds — paint.rs needs no new arm.
-fn layout_alert(
-  kind: AlertKind,
-  inner: &[Block],
-  w: f32,
-  x: f32,
-  fs: &mut FontSystem,
-  theme: &Theme,
-  ctx: &Ctx,
-) -> (Vec<LaidBlock>, f32) {
-  let s = ctx.scale;
-  let indent = QUOTE_INDENT * s;
-  let inner_x = x + indent;
-  let inner_w = (w - indent).max(80.0);
-  let (bar_color, title_color) = theme.alert_colors(kind);
+  let (mut title_laid, title_h, title_to_body) = match title {
+    Some((label, color)) => {
+      let inlines = [Inline::Text(label.to_string())];
+      let (laid, h) = text_block(
+        &inlines,
+        color,
+        BODY_FS * s,
+        BODY_FS * s * BODY_LH_RATIO,
+        inner_w,
+        inner_x,
+        fs,
+        theme,
+        true,
+      );
+      (laid, h, CALLOUT_TITLE_GAP * s)
+    }
+    None => (Vec::new(), 0.0, 0.0),
+  };
 
-  // Title row: bold, accent-colored label of the kind (e.g. "Note").
-  let label_inlines = [Inline::Text(kind.label().to_string())];
-  let (mut title_laid, title_h) = text_block(
-    &label_inlines,
-    title_color,
-    BODY_FS * s,
-    BODY_FS * s * BODY_LH_RATIO,
-    inner_w,
-    inner_x,
-    fs,
-    theme,
-    true,
-  );
-
-  // Tight gap between title and body — half the normal block gap, so
-  // the alert reads as one cohesive unit rather than two paragraphs.
-  let title_to_body_gap = (BLOCK_GAP * s) * 0.5;
   let (mut body_laid, body_h) =
-    layout_blocks(inner, inner_w, inner_x, fs, theme, ctx, BLOCK_GAP * s);
-
-  let body_y = title_h + title_to_body_gap;
+    layout_blocks(blocks, inner_w, inner_x, fs, theme, ctx, BLOCK_GAP * s);
+  let body_y = title_h + title_to_body;
   for lb in body_laid.iter_mut() {
     lb.y += body_y;
   }
   let total_h = body_y + body_h;
 
+  let vpad = CALLOUT_VPAD * s;
+  let bar_y = vpad.min(total_h * 0.5);
+  let bar_h = (total_h - 2.0 * vpad).max(0.0);
+
   let mut all: Vec<LaidBlock> = Vec::with_capacity(title_laid.len() + body_laid.len() + 1);
   all.push(LaidBlock {
-    y: 0.0,
-    h: total_h,
+    y: bar_y,
+    h: bar_h,
     x,
     kind: LaidKind::Bar {
       color: bar_color,
@@ -906,6 +885,30 @@ fn layout_alert(
   all.append(&mut title_laid);
   all.extend(body_laid);
   (all, total_h)
+}
+
+fn layout_quote(
+  inner: &[Block],
+  w: f32,
+  x: f32,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+  layout_callout(inner, None, theme.quote_bar(), w, x, fs, theme, ctx)
+}
+
+fn layout_alert(
+  kind: AlertKind,
+  inner: &[Block],
+  w: f32,
+  x: f32,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+  let (bar, title) = theme.alert_colors(kind);
+  layout_callout(inner, Some((kind.label(), title)), bar, w, x, fs, theme, ctx)
 }
 
 fn text_block(
