@@ -2,13 +2,13 @@
 
 A fast, native markdown viewer for Linux, macOS, and Windows. 
 
-Renders rich layout and syntax highlighting in a single 120 Hz frame (<8.3 ms).
+Renders rich layout in a single 120 Hz frame (<8.3 ms).
 
-Vim/vimium-style keybinds: `y` yanks code blocks, `f` opens links, `/` searches. 
+Vim/vimium-style keybinds: `y` yanks code, `f` opens links, `/` searches. 
 
 Light and dark themes.
 
-Built for a terminal + browser workflow.
+Purpose built for a terminal + browser workflow.
 
 ![demo](assets/demo.gif)
 
