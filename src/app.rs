@@ -443,32 +443,37 @@ impl ApplicationHandler<AppEvent> for App {
         ..
       } => match state {
         ElementState::Pressed => {
+          // `dragging` is set on every press regardless of hit_test —
+          // it tracks "mouse is down, this may be a click or a drag",
+          // not "we hit selectable text". That separation matters for
+          // links in non-text-hit-testable blocks (table cells), which
+          // otherwise wouldn't get the click→link path on release.
+          self.dragging = true;
           if let Some(hit) = self.hit_test(self.cursor.x as f32, self.cursor.y as f32) {
             self.selection = Some(Selection {
               anchor: hit,
               head: hit,
             });
-            self.dragging = true;
-            self.request_redraw();
           } else {
             self.selection = None;
-            self.dragging = false;
-            self.request_redraw();
           }
+          self.request_redraw();
         }
         ElementState::Released => {
           let was_dragging = self.dragging;
           self.dragging = false;
-          if let Some(sel) = self.selection {
-            if sel.is_empty() {
-              self.selection = None;
-              if was_dragging {
-                if let Some(target) = self.link_at_cursor() {
-                  self.follow_link(target);
-                }
+          let had_real_sel = self
+            .selection
+            .as_ref()
+            .map_or(false, |s| !s.is_empty());
+          if !had_real_sel {
+            self.selection = None;
+            if was_dragging {
+              if let Some(target) = self.link_at_cursor() {
+                self.follow_link(target);
               }
-              self.request_redraw();
             }
+            self.request_redraw();
           }
         }
       },
