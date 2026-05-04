@@ -50,11 +50,9 @@ vmd --watch file.md   # watches file for changes and live updates
 
 `q` to quit.
 
-`+` to scale up.
+`+`, `-` or `0` to scale.
 
-`-` to scale down.
-
-`0` to reset scale.
+`j`, `k`, `d`, `u` to navigate.
 
 ## License
 
@@ -76,11 +74,7 @@ for the full text.
 - Inter (Regular, Bold, Italic, BoldItalic). © 2016 The Inter Project Authors. https://github.com/rsms/inter
 - JetBrains Mono (Regular, Bold, Italic). © 2020 JetBrains s.r.o. https://github.com/JetBrains/JetBrainsMono
 
-## How it Stays Fast
-
-Measured on a Ryzen 9 9800X3D, Wayland/SwayWM, against `examples/test.md`. Numbers scale with doc size. 
-
-A typical README cold-launches inside one 120 Hz frame (<8.3 ms exec → present), with one caveat: if there are code blocks in the initial visible frame the launch waits for syntect to finish computing highlights to avoid a redraw. Worst case, this delays launch by one extra frame (~5 ms).
+## How it's Fast
 
 - bundled fonts, zero-copy. Skips fontconfig (50 to 150 ms with ~10k fonts installed)
 - CPU raster, no GPU. Skips ~50 to 150 ms of gpu driver init
@@ -94,3 +88,38 @@ A typical README cold-launches inside one 120 Hz frame (<8.3 ms exec → present
 - glyph raster via `swash.get_image()`
 - memoize highlights by `(lang, code, theme)`
 - process active theme only at startup
+
+A typical README cold-launches inside one 120 Hz frame (<8.3 ms exec → present), with one caveat: if there are code blocks in the initial visible frame the launch waits for syntect to finish computing highlights to avoid a redraw. Worst case, this delays launch by one extra frame (~5 ms).
+
+## Trace
+
+Measured on a Ryzen 9 9800X3D, Wayland/SwayWM, against `examples/test.md`.
+
+```md
+❯ VMD_TRACE=1 target/release/vmd examples/test.md
+[vmd]   0.006ms main
+[vmd]   0.033ms source_read
+[vmd]   0.038ms run_start
+[vmd]   0.121ms fontsystem_ready
+[vmd]   0.284ms doc_parsed
+[vmd]   0.290ms image_dims_read n=0
+[vmd]   0.320ms layout_workers_ready
+[vmd]   0.325ms syntect_warm_start
+[vmd]   1.049ms syntect_defaults_ready
+[vmd]   2.203ms event_loop_created
+[vmd]   2.210ms resumed
+[vmd]   2.546ms speculative_layout_done
+[vmd]   3.013ms window_created
+[vmd]   3.039ms clipboard: bound to window's wl_display
+[vmd]   3.494ms surface_ready
+[vmd]   4.839ms speculative_warm_done
+[vmd]   4.880ms speculative_layout_joined
+[vmd]   4.886ms speculative_layout_used
+[vmd]   4.889ms layout_ready
+[vmd]   4.893ms syntect_wait_skipped (no placeholder code in viewport)
+[vmd]   4.896ms redraw_first
+[vmd]   6.431ms first_present                          <-- markdown rendered
+[vmd]   7.737ms relayout_full_highlight
+[vmd]   7.808ms syntect_precompute_done                
+[vmd]   8.750ms relayout_full_highlight_done           <-- syntax highlight redraw
+```
