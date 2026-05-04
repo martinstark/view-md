@@ -82,11 +82,11 @@ Mixed: ***bold italic***, **bold with `code` inside**, ~~strike with *italic*~~,
 
 ## Table
 
-| lang | year | paradigm     |
-| ---- | ---- | ------------ |
-| Rust | 2010 | systems      |
-| Go   | 2009 | systems      |
-| TS   | 2012 | structural   |
+| lang                                | year | paradigm     |
+| ----------------------------------- | ---- | ------------ |
+| [Rust](https://www.rust-lang.org/)  | 2010 | systems      |
+| [Go](https://go.dev/)               | 2009 | systems      |
+| [TS](https://www.typescriptlang.org/) | 2012 | structural |
 
 ## Images
 
