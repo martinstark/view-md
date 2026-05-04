@@ -9,6 +9,30 @@ use crate::images::ImageStore;
 use crate::layout::{LaidBlock, LaidDoc, LaidKind, TableCellLayout, TableRowLayout, UnderlineRun};
 use crate::theme::Theme;
 
+/// One search match passed from `App` into the painter. Mirrors
+/// `app::SearchMatch` but without the laid-block index (already
+/// pulled out by `SearchHits`).
+#[derive(Clone, Copy)]
+pub struct SearchHit {
+  pub line_i: usize,
+  pub byte_start: usize,
+  pub byte_end: usize,
+  pub active: bool,
+}
+
+/// Per-laid-block view of the current search's matches. Construct
+/// once per redraw, look up by laid-block index. Hides the matches
+/// vector layout from the painter.
+pub struct SearchHits<'a> {
+  pub by_block: &'a [Vec<SearchHit>],
+}
+
+impl<'a> SearchHits<'a> {
+  pub fn for_block(&self, idx: usize) -> Option<&'a [SearchHit]> {
+    self.by_block.get(idx).map(|v| v.as_slice())
+  }
+}
+
 /// u32-ARGB paint surface. Wraps the softbuffer slice directly so paint
 /// writes go straight to the wl_shm-backed buffer with no BGRA→u32
 /// conversion pass at the end. Format is `0x00RRGGBB` per pixel
@@ -272,14 +296,16 @@ impl Painter {
     scroll_y: f32,
     images: &ImageStore,
     anim_elapsed_ms: u128,
+    search_hits: Option<&SearchHits<'_>>,
   ) {
     frame.fill_solid(sk_to_argb(theme.bg));
     let h = frame.height as f32;
-    for block in &doc.blocks {
+    for (idx, block) in doc.blocks.iter().enumerate() {
       let by = block.y - scroll_y;
       if by + block.h < 0.0 || by > h {
         continue;
       }
+      let block_hits = search_hits.and_then(|sh| sh.for_block(idx));
       paint_block(
         frame,
         block,
@@ -289,6 +315,7 @@ impl Painter {
         &mut self.swash,
         images,
         anim_elapsed_ms,
+        block_hits,
       );
     }
   }
@@ -591,6 +618,7 @@ fn paint_block(
   swash: &mut SwashCache,
   images: &ImageStore,
   anim_elapsed_ms: u128,
+  hits: Option<&[SearchHit]>,
 ) {
   match &block.kind {
     LaidKind::Text {
@@ -603,6 +631,9 @@ fn paint_block(
     } => {
       for c in code_runs {
         draw_run_pills(frame, buffer, block.x, y, c, theme.inline_code_bg);
+      }
+      if let Some(hits) = hits {
+        draw_search_highlights(frame, buffer, block.x, y, hits, theme);
       }
       draw_buffer(frame, buffer, fs, swash, block.x, y, *color);
       for u in underlines {
@@ -659,6 +690,9 @@ fn paint_block(
         let lx = block.x + *width - label_w - *pad_x;
         let ly = y + 6.0;
         draw_buffer(frame, label, fs, swash, lx, ly, *lang_label_color);
+      }
+      if let Some(hits) = hits {
+        draw_search_highlights(frame, buffer, block.x + *pad_x, y + *pad_y, hits, theme);
       }
       draw_buffer(
         frame,
@@ -959,6 +993,77 @@ fn draw_run_lines(
         (xe - xs).max(1.0) as i32,
         thickness as i32,
         ct_to_argb(color),
+      );
+    }
+  }
+}
+
+/// Draw the per-glyph background rects for search matches in a
+/// buffer. Inactive matches use a muted yellow tint; the active
+/// match uses a saturated orange. Drawn before glyphs paint so
+/// the text reads on top, matching browser find-in-page UX.
+fn draw_search_highlights(
+  frame: &mut Frame,
+  buf: &Buffer,
+  ox: f32,
+  oy: f32,
+  hits: &[SearchHit],
+  theme: &Theme,
+) {
+  let (active_rgb, active_a, other_rgb, other_a) = if theme.is_dark {
+    (0xf2_a8_29, 0xb0_u8, 0x6b_5a_18, 0x90_u8)
+  } else {
+    (0xff_b3_00, 0xa0_u8, 0xff_e0_80, 0xc8_u8)
+  };
+  for hit in hits {
+    let (rgb, a) = if hit.active {
+      (active_rgb, active_a)
+    } else {
+      (other_rgb, other_a)
+    };
+    draw_byte_range_rect(frame, buf, ox, oy, hit.line_i, hit.byte_start, hit.byte_end, rgb, a);
+  }
+}
+
+/// Fill an alpha-rect behind the glyphs covering a byte range within
+/// a specific BufferLine. Unlike `draw_run_pills`, this filters by
+/// `line_i` so byte ranges don't bleed across lines in multi-line
+/// buffers (e.g. code blocks).
+fn draw_byte_range_rect(
+  frame: &mut Frame,
+  buf: &Buffer,
+  ox: f32,
+  oy: f32,
+  line_i: usize,
+  byte_start: usize,
+  byte_end: usize,
+  rgb: u32,
+  alpha: u8,
+) {
+  let line_height = buf.metrics().line_height;
+  for run in buf.layout_runs() {
+    if run.line_i != line_i {
+      continue;
+    }
+    let mut x_start: Option<f32> = None;
+    let mut x_end: Option<f32> = None;
+    for g in run.glyphs.iter() {
+      if g.end <= byte_start || g.start >= byte_end {
+        continue;
+      }
+      let gx0 = g.x;
+      let gx1 = g.x + g.w;
+      x_start = Some(x_start.map(|s| s.min(gx0)).unwrap_or(gx0));
+      x_end = Some(x_end.map(|s| s.max(gx1)).unwrap_or(gx1));
+    }
+    if let (Some(xs), Some(xe)) = (x_start, x_end) {
+      frame.fill_rect_alpha(
+        (ox + xs - 1.0) as i32,
+        (oy + run.line_top) as i32,
+        ((xe - xs) + 2.0) as i32,
+        line_height as i32,
+        rgb,
+        alpha,
       );
     }
   }
