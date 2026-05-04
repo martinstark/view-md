@@ -29,11 +29,15 @@ impl Theme {
   pub fn dark() -> Self {
     Self {
       is_dark: true,
-      bg: SkColor::from_rgba8(0x0d, 0x11, 0x17, 0xff),
-      fg: Color::rgb(0xe6, 0xed, 0xf3),
+      // Background matches alacritty's primary on this system
+      // (~/.config/alacritty/alacritty.toml). Body fg is alacritty's
+      // foreground nudged up; heading is the same warm hue, brighter
+      // than body but no longer near-white.
+      bg: SkColor::from_rgba8(0x0d, 0x10, 0x17, 0xff),
+      fg: Color::rgb(0xcd, 0xcb, 0xc4),
       muted: Color::rgb(0x8b, 0x94, 0x9e),
       link: Color::rgb(0x58, 0xa6, 0xff),
-      heading: Color::rgb(0xf0, 0xf6, 0xfc),
+      heading: Color::rgb(0xe3, 0xe0, 0xd8),
       code_bg: SkColor::from_rgba8(0x15, 0x1b, 0x23, 0xff),
       code_fg: Color::rgb(0xe6, 0xed, 0xf3),
       inline_code_bg: SkColor::from_rgba8(0x6e, 0x76, 0x81, 0x40),
@@ -48,18 +52,23 @@ impl Theme {
   }
 
   pub fn light() -> Self {
+    // Greyscale fields are byte-inversions of the dark theme so the warm
+    // hue carries over: the page is a warm off-white, body fg sits at
+    // medium contrast, headings push darker for the same hierarchy as
+    // dark mode (just inverted). Semantic colors (link, muted, alerts)
+    // keep their light-mode variants.
     Self {
       is_dark: false,
-      bg: SkColor::from_rgba8(0xff, 0xff, 0xff, 0xff),
-      fg: Color::rgb(0x1f, 0x23, 0x28),
+      bg: SkColor::from_rgba8(0xf2, 0xef, 0xe8, 0xff),
+      fg: Color::rgb(0x32, 0x34, 0x3b),
       muted: Color::rgb(0x59, 0x63, 0x6e),
       link: Color::rgb(0x09, 0x69, 0xda),
-      heading: Color::rgb(0x1f, 0x23, 0x28),
-      code_bg: SkColor::from_rgba8(0xf6, 0xf8, 0xfa, 0xff),
-      code_fg: Color::rgb(0x1f, 0x23, 0x28),
+      heading: Color::rgb(0x1c, 0x1f, 0x27),
+      code_bg: SkColor::from_rgba8(0xea, 0xe4, 0xdc, 0xff),
+      code_fg: Color::rgb(0x19, 0x12, 0x0c),
       inline_code_bg: SkColor::from_rgba8(0xaf, 0xb8, 0xc1, 0x33),
-      rule: SkColor::from_rgba8(0xd8, 0xde, 0xe4, 0xff),
-      border: SkColor::from_rgba8(0xd0, 0xd7, 0xde, 0xff),
+      rule: SkColor::from_rgba8(0xde, 0xd9, 0xd2, 0xff),
+      border: SkColor::from_rgba8(0xcf, 0xc9, 0xc2, 0xff),
       alert_note: (0x1f, 0x6f, 0xeb),
       alert_tip: (0x1a, 0x7f, 0x37),
       alert_important: (0x82, 0x50, 0xdf),
