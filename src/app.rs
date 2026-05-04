@@ -104,6 +104,13 @@ pub struct App {
   /// actual surface against these and only re-runs layout on mismatch.
   pub speculative_w: f32,
   pub speculative_scale: f32,
+  /// Initial window dimensions (logical px) requested in `resumed()`.
+  /// Defaults to `lib::DEFAULT_W`/`DEFAULT_H` on first run; restored from
+  /// `Prefs.width`/`height` on subsequent launches. Must match the
+  /// values the speculative-layout thread shaped against (`speculative_w`
+  /// at `dpi_scale=1.0`) so the spec result is reused without a relayout.
+  pub initial_logical_w: f32,
+  pub initial_logical_h: f32,
   /// Set true by the precompute background thread once the syntect cache is
   /// warm. `App::relayout` checks this and lays out with full highlighting
   /// from the start when set, avoiding the second-pass upgrade entirely on
@@ -371,7 +378,7 @@ impl ApplicationHandler<AppEvent> for App {
 
     let attrs = Window::default_attributes()
       .with_title(format!("{} — vmd", self.title))
-      .with_inner_size(LogicalSize::new(920.0, 1100.0));
+      .with_inner_size(LogicalSize::new(self.initial_logical_w, self.initial_logical_h));
     let window = Rc::new(event_loop.create_window(attrs).expect("window create"));
     crate::trace!("window_created");
 
@@ -479,7 +486,10 @@ impl ApplicationHandler<AppEvent> for App {
 
   fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
     match event {
-      WindowEvent::CloseRequested => event_loop.exit(),
+      WindowEvent::CloseRequested => {
+        self.persist();
+        event_loop.exit();
+      }
       WindowEvent::Resized(size) => {
         if let Some(surface) = self.surface.as_mut() {
           // Resize invalidates every captured hint position; close
@@ -670,7 +680,10 @@ impl App {
         self.request_redraw();
       }
       Key::Character("y") => self.yank_visible_code(),
-      Key::Character("q") | Key::Named(NamedKey::Escape) => event_loop.exit(),
+      Key::Character("q") | Key::Named(NamedKey::Escape) => {
+        self.persist();
+        event_loop.exit();
+      }
       Key::Character("t") => {
         self.dark = !self.dark;
         self.relayout(self.current_surface_width());
@@ -1378,9 +1391,20 @@ impl App {
   }
 
   fn persist(&self) {
+    let (pw, ph) = self.surface_size;
+    let scale = self.dpi_scale.max(1.0);
+    let (width, height) = if pw == 0 || ph == 0 {
+      // Pre-window or surface not yet resized — keep prior saved size
+      // by writing None (load defaults to DEFAULT_W/H if absent).
+      (None, None)
+    } else {
+      (Some(pw as f32 / scale), Some(ph as f32 / scale))
+    };
     state::save(&Prefs {
       theme: Some(self.dark),
       zoom: Some(self.zoom),
+      width,
+      height,
     });
   }
 
