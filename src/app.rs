@@ -463,8 +463,8 @@ impl ApplicationHandler<AppEvent> for App {
             if sel.is_empty() {
               self.selection = None;
               if was_dragging {
-                if let Some(href) = self.link_at_cursor() {
-                  let _ = opener::open(&href);
+                if let Some(target) = self.link_at_cursor() {
+                  self.follow_link(target);
                 }
               }
               self.request_redraw();
@@ -1192,7 +1192,7 @@ impl App {
     }
   }
 
-  fn link_at_cursor(&self) -> Option<String> {
+  fn link_at_cursor(&self) -> Option<crate::layout::LinkTarget> {
     let laid = self.laid.as_ref()?;
     let cx = self.cursor.x as f32;
     let cy = self.cursor.y as f32 + self.scroll_y;
@@ -1218,7 +1218,7 @@ impl App {
             }
             for link in links {
               if g.start >= link.byte_start && g.end <= link.byte_end {
-                return Some(link.href.clone());
+                return Some(link.target.clone());
               }
             }
           }
@@ -1226,6 +1226,44 @@ impl App {
       }
     }
     None
+  }
+
+  fn follow_link(&mut self, target: crate::layout::LinkTarget) {
+    use crate::layout::LinkTarget;
+    match target {
+      LinkTarget::Url(href) => {
+        let _ = opener::open(&href);
+      }
+      LinkTarget::Footnote(label) => self.scroll_to_footnote(&label, /* forward */ true),
+      LinkTarget::FootnoteBack(label) => self.scroll_to_footnote(&label, /* forward */ false),
+    }
+  }
+
+  fn scroll_to_footnote(&mut self, label: &str, forward: bool) {
+    let Some(laid) = self.laid.as_ref() else {
+      return;
+    };
+    let Some(jump) = laid.footnote_jumps.get(label) else {
+      crate::trace!("footnote_miss '{}'", label);
+      return;
+    };
+    let Some(target_y) = (if forward {
+      Some(jump.def_y)
+    } else {
+      jump.first_ref_y
+    }) else {
+      return;
+    };
+    let max = (laid.total_height - self.viewport_h()).max(0.0);
+    self.scroll_y =
+      (target_y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+    crate::trace!(
+      "footnote_jump '{}' {} -> y={}",
+      label,
+      if forward { "fwd" } else { "back" },
+      target_y
+    );
+    self.request_redraw();
   }
 
   fn redraw(&mut self) {
