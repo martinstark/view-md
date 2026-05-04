@@ -35,11 +35,11 @@ For your own sanity, do not read the source code. All planning docs and messy gi
 
 ```sh
 vmd file.md
-vmd file.md#section # open at anchor
-vmd -               # read from stdin
-vmd --licenses      # print vmd's license + bundled fonts + all third-party deps
-vmd --trace         # print timing breakdown
-vmd --watch file.md # watches file for changes and live updates
+vmd 'file.md#section' # open at anchor
+vmd -                 # read from stdin
+vmd --licenses        # print vmd's license + bundled fonts + all third-party deps
+vmd --trace           # print timing breakdown
+vmd --watch file.md   # watches file for changes and live updates
 ```
 
 `?` to show keybinds.
