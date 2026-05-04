@@ -85,24 +85,26 @@ fn parse(contents: &str) -> Prefs {
         _ => {}
       },
       "zoom" => {
-        if let Ok(z) = v.parse::<f32>() {
-          if z > 0.0 {
-            p.zoom = Some(z);
-          }
+        if let Ok(z) = v.parse::<f32>()
+          && z > 0.0
+        {
+          p.zoom = Some(z);
         }
       }
       "width" => {
-        if let Ok(w) = v.parse::<f32>() {
-          if w.is_finite() && (MIN_DIM..=MAX_W).contains(&w) {
-            p.width = Some(w);
-          }
+        if let Ok(w) = v.parse::<f32>()
+          && w.is_finite()
+          && (MIN_DIM..=MAX_W).contains(&w)
+        {
+          p.width = Some(w);
         }
       }
       "height" => {
-        if let Ok(h) = v.parse::<f32>() {
-          if h.is_finite() && (MIN_DIM..=MAX_H).contains(&h) {
-            p.height = Some(h);
-          }
+        if let Ok(h) = v.parse::<f32>()
+          && h.is_finite()
+          && (MIN_DIM..=MAX_H).contains(&h)
+        {
+          p.height = Some(h);
         }
       }
       _ => {}

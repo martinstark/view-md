@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use vmd::trace;
@@ -116,7 +116,7 @@ fn main() -> ExitCode {
   ExitCode::SUCCESS
 }
 
-fn file_title(p: &PathBuf) -> String {
+fn file_title(p: &Path) -> String {
   p.file_name()
     .map(|n| n.to_string_lossy().into_owned())
     .unwrap_or_else(|| String::from("vmd"))

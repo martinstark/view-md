@@ -73,11 +73,11 @@ impl ImageStore {
 
   pub fn set_frames(&self, key: &Path, frames: Vec<AnimFrame>) {
     let total: u32 = frames.iter().map(|f| f.delay_ms).sum();
-    if let Ok(mut m) = self.map.write() {
-      if let Some(e) = m.get_mut(key) {
-        e.frames = Some(Arc::new(frames));
-        e.total_duration_ms = total;
-      }
+    if let Ok(mut m) = self.map.write()
+      && let Some(e) = m.get_mut(key)
+    {
+      e.frames = Some(Arc::new(frames));
+      e.total_duration_ms = total;
     }
   }
 
@@ -102,10 +102,10 @@ impl ImageStore {
   }
 
   pub fn set_failed(&self, key: &Path) {
-    if let Ok(mut m) = self.map.write() {
-      if let Some(e) = m.get_mut(key) {
-        e.failed = true;
-      }
+    if let Ok(mut m) = self.map.write()
+      && let Some(e) = m.get_mut(key)
+    {
+      e.failed = true;
     }
   }
 
@@ -115,7 +115,7 @@ impl ImageStore {
   pub fn has_animations(&self) -> bool {
     let Ok(m) = self.map.read() else { return false };
     m.values()
-      .any(|e| e.frames.as_ref().map_or(false, |f| f.len() > 1))
+      .any(|e| e.frames.as_ref().is_some_and(|f| f.len() > 1))
   }
 }
 
@@ -202,10 +202,8 @@ pub fn decode_streaming<F: FnMut(AnimFrame)>(path: &Path, mut on_frame: F) -> bo
   let is_gif = matches!(ext.as_deref(), Some("gif"));
   let is_webp = matches!(ext.as_deref(), Some("webp"));
 
-  if is_gif || is_webp {
-    if decode_animated_streaming(path, is_gif, &mut on_frame) {
-      return true;
-    }
+  if (is_gif || is_webp) && decode_animated_streaming(path, is_gif, &mut on_frame) {
+    return true;
   }
 
   // Static path (PNG/JPEG/static WebP/non-animated GIF).
@@ -272,10 +270,10 @@ where
   for frame_result in iter {
     let Ok(frame) = frame_result else { break };
     let (n, d) = frame.delay().numer_denom_ms();
-    let raw_ms = if d == 0 { 100 } else { (n / d).max(0) };
+    let raw_ms = if d == 0 { 100 } else { n / d };
     // Match browser behavior: clamp very-fast GIFs to 20ms (50 fps) so
     // the redraw loop doesn't burn CPU on adversarial encodings.
-    let delay_ms = (raw_ms as u32).max(20);
+    let delay_ms = raw_ms.max(20);
     on_frame(AnimFrame {
       delay_ms,
       buffer: Arc::new(frame.into_buffer()),
@@ -305,11 +303,7 @@ pub fn pick_frame_index(frames: &[AnimFrame], total_ms: u32, elapsed_ms: u128) -
 
 /// Milliseconds from `elapsed_ms` to the next frame transition for this
 /// animation. Static images return `None` (no upcoming deadline).
-pub fn ms_until_next_frame(
-  frames: &[AnimFrame],
-  total_ms: u32,
-  elapsed_ms: u128,
-) -> Option<u32> {
+pub fn ms_until_next_frame(frames: &[AnimFrame], total_ms: u32, elapsed_ms: u128) -> Option<u32> {
   if frames.len() <= 1 || total_ms == 0 {
     return None;
   }
@@ -323,4 +317,3 @@ pub fn ms_until_next_frame(
   }
   Some(1)
 }
-

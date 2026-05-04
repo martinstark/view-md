@@ -247,10 +247,9 @@ pub fn layout_parallel(
   std::thread::scope(|s| {
     let handles: Vec<_> = worker_fs
       .iter_mut()
-      .zip(worker_indices.into_iter())
+      .zip(worker_indices)
       .map(|(fs, indices)| {
         let blocks = &doc.blocks;
-        let theme = theme;
         let ctx = &ctx;
         s.spawn(move || -> Vec<(usize, Vec<LaidBlock>, f32)> {
           indices
@@ -475,7 +474,11 @@ fn layout_image(src: &str, alt: &str, w: f32, x: f32, ctx: &Ctx) -> (Vec<LaidBlo
   let nat_wf = nat_w as f32;
   let nat_hf = nat_h as f32;
   let display_w = nat_wf.min(w);
-  let aspect = if nat_wf > 0.0 { nat_hf / nat_wf } else { 0.5625 };
+  let aspect = if nat_wf > 0.0 {
+    nat_hf / nat_wf
+  } else {
+    0.5625
+  };
   let display_h = display_w * aspect;
   let img_x = x + ((w - display_w) / 2.0).max(0.0);
   (
@@ -809,7 +812,7 @@ fn build_footnote_label(
     .color(theme.muted);
   let arrow_attrs = base.clone().color(theme.link);
   buf.set_rich_text(
-    [(prefix.as_str(), base.clone()), (ARROW, arrow_attrs)].into_iter(),
+    [(prefix.as_str(), base.clone()), (ARROW, arrow_attrs)],
     &base,
     Shaping::Advanced,
     None,
@@ -918,7 +921,7 @@ fn build_highlighted_buffer(
   if rich.is_empty() {
     buf.set_text("", &default_attrs, Shaping::Basic, None);
   } else {
-    buf.set_rich_text(rich.into_iter(), &default_attrs, Shaping::Basic, None);
+    buf.set_rich_text(rich, &default_attrs, Shaping::Basic, None);
   }
   buf.shape_until_scroll(fs, false);
   buf
@@ -960,11 +963,7 @@ fn layout_list(
         .font_features(marker_features());
       buf.set_text(&text, &attrs, Shaping::Advanced, None);
       buf.shape_until_scroll(fs, false);
-      let measured = buf
-        .layout_runs()
-        .next()
-        .map(|r| r.line_w)
-        .unwrap_or(0.0);
+      let measured = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
       Some((buf, measured))
     })
     .collect();
@@ -1106,7 +1105,16 @@ fn layout_alert(
   ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
   let (bar, title) = theme.alert_colors(kind);
-  layout_callout(inner, Some((kind.label(), title)), bar, w, x, fs, theme, ctx)
+  layout_callout(
+    inner,
+    Some((kind.label(), title)),
+    bar,
+    w,
+    x,
+    fs,
+    theme,
+    ctx,
+  )
 }
 
 fn text_block(

@@ -221,9 +221,9 @@ fn sk_to_ct(c: SkColor) -> Color {
 /// hint set: midpoint of (badge bg, label fg) reads as a faded label.
 #[inline]
 fn blend_sk_ct(a: SkColor, b: Color, t: f32) -> Color {
-  let ar = (a.red() * 255.0) as f32;
-  let ag = (a.green() * 255.0) as f32;
-  let ab = (a.blue() * 255.0) as f32;
+  let ar = a.red() * 255.0;
+  let ag = a.green() * 255.0;
+  let ab = a.blue() * 255.0;
   let br = b.r() as f32;
   let bg = b.g() as f32;
   let bb = b.b() as f32;
@@ -256,15 +256,7 @@ const HINT_BADGE_EDGE_INSET: f32 = 8.0;
 /// scratch `Pixmap` and composite into the frame. The path's bounding
 /// box is the scratch size, which keeps the per-pixel blend cost
 /// bounded to the path's footprint instead of the whole frame.
-fn fill_rounded_rect_aa(
-  frame: &mut Frame,
-  x: i32,
-  y: i32,
-  w: u32,
-  h: u32,
-  r: f32,
-  color: SkColor,
-) {
+fn fill_rounded_rect_aa(frame: &mut Frame, x: i32, y: i32, w: u32, h: u32, r: f32, color: SkColor) {
   if w == 0 || h == 0 {
     return;
   }
@@ -795,7 +787,7 @@ impl Painter {
         .map(|(s, c)| (*s, base_attrs.clone().color(*c)))
         .collect();
       buf.set_rich_text(
-        rich.into_iter(),
+        rich,
         &base_attrs.clone().color(default_color),
         cosmic_text::Shaping::Advanced,
         None,
@@ -803,10 +795,7 @@ impl Painter {
     }
     buf.shape_until_scroll(&mut self.fs, false);
 
-    let measured = buf
-      .layout_runs()
-      .map(|r| r.line_w)
-      .fold(0.0_f32, f32::max);
+    let measured = buf.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
     let badge_w = measured + pad_x * 2.0;
     let badge_h = lh + pad_y * 2.0;
 
@@ -1120,16 +1109,16 @@ fn paint_table(
   let border_argb = sk_to_argb(border);
 
   // Header background
-  if let Some(first) = rows.first() {
-    if first.is_header {
-      frame.fill_rect(
-        x0 as i32,
-        y0 as i32,
-        block_w as i32,
-        first.h as i32,
-        sk_to_argb(header_bg),
-      );
-    }
+  if let Some(first) = rows.first()
+    && first.is_header
+  {
+    frame.fill_rect(
+      x0 as i32,
+      y0 as i32,
+      block_w as i32,
+      first.h as i32,
+      sk_to_argb(header_bg),
+    );
   }
 
   // Outer border + horizontal lines (1px each)
@@ -1297,7 +1286,17 @@ fn draw_search_highlights(
     } else {
       (other_rgb, other_a)
     };
-    draw_byte_range_rect(frame, buf, ox, oy, hit.line_i, hit.byte_start, hit.byte_end, rgb, a);
+    draw_byte_range_rect(
+      frame,
+      buf,
+      ox,
+      oy,
+      hit.line_i,
+      hit.byte_start,
+      hit.byte_end,
+      rgb,
+      a,
+    );
   }
 }
 
@@ -1418,13 +1417,7 @@ fn paint_task_box(frame: &mut Frame, x: f32, y: f32, size: f32, checked: bool, t
     let pad = (size * 0.28).round() as i32;
     let pad = pad.max(2);
     let inner = (outer - 2 * pad).max(1);
-    frame.fill_rect(
-      ox + pad,
-      oy + pad,
-      inner,
-      inner,
-      ct_to_argb(theme.link),
-    );
+    frame.fill_rect(ox + pad, oy + pad, inner, inner, ct_to_argb(theme.link));
   }
 }
 
@@ -1458,10 +1451,10 @@ fn paint_block_selection(
   let (rgb, alpha) = sk_to_rgba(bg);
   for run in buffer.layout_runs() {
     let line_idx = run.line_i;
-    let after_start = start.map_or(true, |s| line_idx > s.line);
-    let before_end = end.map_or(true, |e| line_idx < e.line);
-    let on_start = start.map_or(false, |s| line_idx == s.line);
-    let on_end = end.map_or(false, |e| line_idx == e.line);
+    let after_start = start.is_none_or(|s| line_idx > s.line);
+    let before_end = end.is_none_or(|e| line_idx < e.line);
+    let on_start = start.is_some_and(|s| line_idx == s.line);
+    let on_end = end.is_some_and(|e| line_idx == e.line);
 
     if !after_start && !on_start && !on_end {
       continue;

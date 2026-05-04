@@ -160,7 +160,7 @@ pub fn precompute(blocks: Vec<(String, String)>, dark: bool) {
             return;
           };
           let key: CacheKey = (lang.clone(), code.clone(), dark);
-          if cache().lock().ok().map_or(false, |c| c.contains_key(&key)) {
+          if cache().lock().ok().is_some_and(|c| c.contains_key(&key)) {
             continue;
           }
           let spans = Arc::new(compute_highlight(&code, &lang, dark));
@@ -187,7 +187,7 @@ fn alias_lang(lang: &str) -> &str {
     "rs" => "rust",
     "py" => "python",
     "rb" => "ruby",
-    _ => return lang,
+    _ => lang,
   }
 }
 

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 pub mod app;
 pub mod doc;
 pub mod highlight;
@@ -151,50 +153,48 @@ pub fn run(
   let assumed_viewport_h = initial_logical_h * assumed_dpi_scale.max(1.0);
   let images_for_spec = images.clone();
   let base_dir_for_spec = base_dir.clone();
-  let layout_handle = std::thread::spawn(
-    move || -> SpecResult {
-      let mut fs = fs;
-      let mut layout_workers = layout_workers;
-      let full = ready_for_layout.load(Ordering::Acquire);
-      // Spec layout runs in PARALLEL across `1 + N_LAYOUT_WORKERS` lanes.
-      // An earlier comment warned that this cost ~2ms in syntect contention
-      // pre-T6 (when shaping was ~2× heavier per block). With T6's mono
-      // fast-path the parallel window is much smaller and the contention
-      // re-measured as a net win. Item (A) on the post-T6 plan.
-      let laid = layout_parallel(
-        &doc,
-        assumed_surface_w,
-        &mut fs,
-        &mut layout_workers,
-        &theme,
-        full,
-        assumed_scale,
-        images_for_spec,
-        base_dir_for_spec,
-      );
-      crate::trace!("speculative_layout_done");
-      // Pre-warm the swash glyph cache for the visible viewport in
-      // PARALLEL across `1 + N_LAYOUT_WORKERS` lanes (item B). Each lane
-      // uses its own SwashCache; after all done, worker caches drain
-      // into the main cache the painter will own. cache_key compatibility
-      // across FontSystems is the same property layout_parallel relies
-      // on (deterministic fontdb slotmap IDs).
-      let mut swash = SwashCache::new();
-      let mut worker_swashes: Vec<SwashCache> = (0..layout_workers.len())
-        .map(|_| SwashCache::new())
-        .collect();
-      warm_glyph_cache_parallel(
-        &mut swash,
-        &mut fs,
-        &mut layout_workers,
-        &mut worker_swashes,
-        &laid,
-        assumed_viewport_h,
-      );
-      crate::trace!("speculative_warm_done");
-      (doc, fs, layout_workers, laid, full, swash)
-    },
-  );
+  let layout_handle = std::thread::spawn(move || -> SpecResult {
+    let mut fs = fs;
+    let mut layout_workers = layout_workers;
+    let full = ready_for_layout.load(Ordering::Acquire);
+    // Spec layout runs in PARALLEL across `1 + N_LAYOUT_WORKERS` lanes.
+    // An earlier comment warned that this cost ~2ms in syntect contention
+    // pre-T6 (when shaping was ~2× heavier per block). With T6's mono
+    // fast-path the parallel window is much smaller and the contention
+    // re-measured as a net win. Item (A) on the post-T6 plan.
+    let laid = layout_parallel(
+      &doc,
+      assumed_surface_w,
+      &mut fs,
+      &mut layout_workers,
+      &theme,
+      full,
+      assumed_scale,
+      images_for_spec,
+      base_dir_for_spec,
+    );
+    crate::trace!("speculative_layout_done");
+    // Pre-warm the swash glyph cache for the visible viewport in
+    // PARALLEL across `1 + N_LAYOUT_WORKERS` lanes (item B). Each lane
+    // uses its own SwashCache; after all done, worker caches drain
+    // into the main cache the painter will own. cache_key compatibility
+    // across FontSystems is the same property layout_parallel relies
+    // on (deterministic fontdb slotmap IDs).
+    let mut swash = SwashCache::new();
+    let mut worker_swashes: Vec<SwashCache> = (0..layout_workers.len())
+      .map(|_| SwashCache::new())
+      .collect();
+    warm_glyph_cache_parallel(
+      &mut swash,
+      &mut fs,
+      &mut layout_workers,
+      &mut worker_swashes,
+      &laid,
+      assumed_viewport_h,
+    );
+    crate::trace!("speculative_warm_done");
+    (doc, fs, layout_workers, laid, full, swash)
+  });
 
   let event_loop = EventLoop::<AppEvent>::with_user_event()
     .build()
@@ -323,7 +323,10 @@ fn decode_images(
 /// re-reading a stable file twice is microseconds and idempotent.
 fn spawn_watcher(path: PathBuf, proxy: winit::event_loop::EventLoopProxy<AppEvent>) {
   use notify::{Config, EventKind, RecursiveMode, Watcher};
-  let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+  let dir = path
+    .parent()
+    .map(|p| p.to_path_buf())
+    .unwrap_or_else(|| PathBuf::from("."));
   let target = path.canonicalize().unwrap_or(path);
   let proxy_clone = proxy.clone();
   let target_clone = target.clone();
@@ -336,9 +339,10 @@ fn spawn_watcher(path: PathBuf, proxy: winit::event_loop::EventLoopProxy<AppEven
       ) {
         return;
       }
-      let touches = ev.paths.iter().any(|p| {
-        p == &target_clone || p.canonicalize().ok().as_deref() == Some(&target_clone)
-      });
+      let touches = ev
+        .paths
+        .iter()
+        .any(|p| p == &target_clone || p.canonicalize().ok().as_deref() == Some(&target_clone));
       if touches {
         crate::trace!("watcher_event {:?} {:?}", ev.kind, ev.paths);
         let _ = proxy_clone.send_event(AppEvent::Reload);

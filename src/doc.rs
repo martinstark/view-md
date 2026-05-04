@@ -141,10 +141,10 @@ pub fn parse(md: &str) -> Doc {
   let mut blocks = b.finish();
   promote_image_paragraphs(&mut blocks);
   promote_alerts(&mut blocks);
-  if let Some(entries) = frontmatter {
-    if !entries.is_empty() {
-      blocks.insert(0, Block::Frontmatter { entries });
-    }
+  if let Some(entries) = frontmatter
+    && !entries.is_empty()
+  {
+    blocks.insert(0, Block::Frontmatter { entries });
   }
   Doc { blocks }
 }
@@ -204,16 +204,16 @@ fn extract_frontmatter(source: &str) -> (Option<Vec<(String, String)>>, &str) {
 /// markdown — `![alt](url)` on its own line — and the only image
 /// presentation we render at block size in v1. Inline images mixed
 /// with text continue to render as alt-text in their paragraph.
-fn promote_image_paragraphs(blocks: &mut Vec<Block>) {
+fn promote_image_paragraphs(blocks: &mut [Block]) {
   for block in blocks.iter_mut() {
     walk_children_mut(block, promote_image_paragraphs);
   }
   for block in blocks.iter_mut() {
-    if let Block::Paragraph(inlines) = block {
-      if let [Inline::Image { src, alt }] = inlines.as_slice() {
-        let (src, alt) = (src.clone(), alt.clone());
-        *block = Block::Image { src, alt };
-      }
+    if let Block::Paragraph(inlines) = block
+      && let [Inline::Image { src, alt }] = inlines.as_slice()
+    {
+      let (src, alt) = (src.clone(), alt.clone());
+      *block = Block::Image { src, alt };
     }
   }
 }
@@ -223,7 +223,7 @@ fn promote_image_paragraphs(blocks: &mut Vec<Block>) {
 /// The marker line is stripped from the body; the rest renders inside
 /// the alert. Per GFM, the marker must be on its own line at the top
 /// of the quote — anything else is left as a regular quote.
-fn promote_alerts(blocks: &mut Vec<Block>) {
+fn promote_alerts(blocks: &mut [Block]) {
   for block in blocks.iter_mut() {
     walk_children_mut(block, promote_alerts);
   }
@@ -238,7 +238,7 @@ fn promote_alerts(blocks: &mut Vec<Block>) {
   }
 }
 
-fn walk_children_mut(block: &mut Block, f: fn(&mut Vec<Block>)) {
+fn walk_children_mut(block: &mut Block, f: fn(&mut [Block])) {
   match block {
     Block::Quote(inner) => f(inner),
     Block::List { items, .. } => {
@@ -479,10 +479,10 @@ impl Builder {
       }
       TagEnd::Item => {
         self.flush_item_pending();
-        if let Some(Frame::Item { task, blocks, .. }) = self.stack.pop() {
-          if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
-            items.push(ListItem { task, blocks });
-          }
+        if let Some(Frame::Item { task, blocks, .. }) = self.stack.pop()
+          && let Some(Frame::List { items, .. }) = self.stack.last_mut()
+        {
+          items.push(ListItem { task, blocks });
         }
       }
       TagEnd::Emphasis => {
@@ -525,24 +525,24 @@ impl Builder {
         }
       }
       TagEnd::TableRow => {
-        if let Some(t) = self.table.as_mut() {
-          if let Some(row) = t.current_row.take() {
-            if t.in_head {
-              t.head = row;
-            } else {
-              t.rows.push(row);
-            }
+        if let Some(t) = self.table.as_mut()
+          && let Some(row) = t.current_row.take()
+        {
+          if t.in_head {
+            t.head = row;
+          } else {
+            t.rows.push(row);
           }
         }
       }
       TagEnd::TableCell => {
-        if let Some(Frame::TableCell(inlines)) = self.stack.pop() {
-          if let Some(t) = self.table.as_mut() {
-            if let Some(row) = t.current_row.as_mut() {
-              row.push(inlines);
-            } else if t.in_head {
-              t.head.push(inlines);
-            }
+        if let Some(Frame::TableCell(inlines)) = self.stack.pop()
+          && let Some(t) = self.table.as_mut()
+        {
+          if let Some(row) = t.current_row.as_mut() {
+            row.push(inlines);
+          } else if t.in_head {
+            t.head.push(inlines);
           }
         }
       }
@@ -594,11 +594,10 @@ impl Builder {
     if let Some(Frame::Item {
       pending, blocks, ..
     }) = self.stack.last_mut()
+      && !pending.is_empty()
     {
-      if !pending.is_empty() {
-        let inlines = std::mem::take(pending);
-        blocks.push(Block::Paragraph(inlines));
-      }
+      let inlines = std::mem::take(pending);
+      blocks.push(Block::Paragraph(inlines));
     }
   }
 

@@ -205,7 +205,7 @@ pub fn build_buffer(
   if spans.is_empty() {
     buf.set_text("", &default_attrs, Shaping::Advanced, None);
   } else {
-    buf.set_rich_text(spans.into_iter(), &default_attrs, Shaping::Advanced, None);
+    buf.set_rich_text(spans, &default_attrs, Shaping::Advanced, None);
   }
   buf.shape_until_scroll(fs, false);
   buf

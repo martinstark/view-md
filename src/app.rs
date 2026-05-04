@@ -378,23 +378,26 @@ impl ApplicationHandler<AppEvent> for App {
 
     let attrs = Window::default_attributes()
       .with_title(format!("{} — vmd", self.title))
-      .with_inner_size(LogicalSize::new(self.initial_logical_w, self.initial_logical_h));
+      .with_inner_size(LogicalSize::new(
+        self.initial_logical_w,
+        self.initial_logical_h,
+      ));
     let window = Rc::new(event_loop.create_window(attrs).expect("window create"));
     crate::trace!("window_created");
 
     // Tie the clipboard to *this* window's wl_display so the compositor
     // grants ownership to the connection that has surface focus. On
     // non-Wayland platforms we fall through to arboard later.
-    if let Ok(dh) = window.display_handle() {
-      if let RawDisplayHandle::Wayland(wd) = dh.as_raw() {
-        // SAFETY: `wd.display` is a valid wl_display pointer for the
-        // lifetime of the winit Connection. We drop the Clipboard before
-        // the window (declaration order in App) so the display is still
-        // alive at drop time.
-        let clip = unsafe { smithay_clipboard::Clipboard::new(wd.display.as_ptr()) };
-        self.wayland_clipboard = Some(clip);
-        crate::trace!("clipboard: bound to window's wl_display");
-      }
+    if let Ok(dh) = window.display_handle()
+      && let RawDisplayHandle::Wayland(wd) = dh.as_raw()
+    {
+      // SAFETY: `wd.display` is a valid wl_display pointer for the
+      // lifetime of the winit Connection. We drop the Clipboard before
+      // the window (declaration order in App) so the display is still
+      // alive at drop time.
+      let clip = unsafe { smithay_clipboard::Clipboard::new(wd.display.as_ptr()) };
+      self.wayland_clipboard = Some(clip);
+      crate::trace!("clipboard: bound to window's wl_display");
     }
 
     self.dpi_scale = window.scale_factor() as f32;
@@ -455,7 +458,7 @@ impl ApplicationHandler<AppEvent> for App {
     // scrolls.
     let viewport_h = h as f32;
     let placeholder_code_visible = !self.full_highlight
-      && self.laid.as_ref().map_or(false, |l| {
+      && self.laid.as_ref().is_some_and(|l| {
         l.blocks
           .iter()
           .any(|b| b.y < viewport_h && matches!(b.kind, LaidKind::CodeBlock { .. }))
@@ -542,13 +545,13 @@ impl ApplicationHandler<AppEvent> for App {
           return;
         }
         self.cursor = position;
-        if self.dragging {
-          if let Some(hit) = self.hit_test(position.x as f32, position.y as f32) {
-            if let Some(sel) = self.selection.as_mut() {
-              sel.head = hit;
-            }
-            self.request_redraw();
+        if self.dragging
+          && let Some(hit) = self.hit_test(position.x as f32, position.y as f32)
+        {
+          if let Some(sel) = self.selection.as_mut() {
+            sel.head = hit;
           }
+          self.request_redraw();
         }
       }
       WindowEvent::ModifiersChanged(modifiers) => {
@@ -587,16 +590,11 @@ impl ApplicationHandler<AppEvent> for App {
         ElementState::Released => {
           let was_dragging = self.dragging;
           self.dragging = false;
-          let had_real_sel = self
-            .selection
-            .as_ref()
-            .map_or(false, |s| !s.is_empty());
+          let had_real_sel = self.selection.as_ref().is_some_and(|s| !s.is_empty());
           if !had_real_sel {
             self.selection = None;
-            if was_dragging {
-              if let Some(target) = self.link_at_cursor() {
-                self.follow_link(target);
-              }
+            if was_dragging && let Some(target) = self.link_at_cursor() {
+              self.follow_link(target);
             }
             self.request_redraw();
           }
@@ -632,11 +630,11 @@ impl App {
       self.modifiers.state().shift_key(),
       self.modifiers.state().alt_key()
     );
-    if self.modifiers.state().control_key() {
-      if matches!(key.as_ref(), Key::Character("c") | Key::Character("C")) {
-        self.copy_selection();
-        return;
-      }
+    if self.modifiers.state().control_key()
+      && matches!(key.as_ref(), Key::Character("c") | Key::Character("C"))
+    {
+      self.copy_selection();
+      return;
     }
     // Search captures all input while open: Esc closes, Enter advances
     // to the next match (cycling), Backspace edits the query, and any
@@ -933,8 +931,7 @@ impl App {
     // expires the erase is genuine and `check_empty_deadline` will
     // re-read and apply.
     if source.trim().is_empty() && !self.doc.blocks.is_empty() {
-      let deadline =
-        Instant::now() + Duration::from_millis(Self::EMPTY_RECHECK_MS);
+      let deadline = Instant::now() + Duration::from_millis(Self::EMPTY_RECHECK_MS);
       self.empty_reload_deadline = Some(deadline);
       crate::trace!(
         "reload_deferred (empty, recheck in {}ms)",
@@ -1076,8 +1073,7 @@ impl App {
         if slugify(&text) == target {
           if let Some(y) = laid.heading_ys.get(hi) {
             let max = (laid.total_height - self.viewport_h()).max(0.0);
-            self.scroll_y =
-              (*y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+            self.scroll_y = (*y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
             crate::trace!("anchor_jump '{}' -> y={}", anchor, *y);
           }
           return;
@@ -1098,10 +1094,10 @@ impl App {
         self.advance_search_match();
       }
       Key::Named(NamedKey::Backspace) => {
-        if let Some(s) = self.search.as_mut() {
-          if s.query.pop().is_some() {
-            self.recompute_search();
-          }
+        if let Some(s) = self.search.as_mut()
+          && s.query.pop().is_some()
+        {
+          self.recompute_search();
         }
       }
       Key::Character(s) => {
@@ -1164,7 +1160,10 @@ impl App {
     if state.matches.is_empty() {
       return;
     }
-    let next = state.current.map(|c| (c + 1) % state.matches.len()).unwrap_or(0);
+    let next = state
+      .current
+      .map(|c| (c + 1) % state.matches.len())
+      .unwrap_or(0);
     state.current = Some(next);
     let m = state.matches[next];
     self.scroll_to_match(m);
@@ -1208,8 +1207,7 @@ impl App {
       return;
     };
     let max = (laid.total_height - self.viewport_h()).max(0.0);
-    self.scroll_y =
-      (block.y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+    self.scroll_y = (block.y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
   }
 
   /// Build the vimium-style hint set against the *currently visible*
@@ -1232,13 +1230,7 @@ impl App {
       if block.y + block.h <= viewport_top || block.y >= viewport_bottom {
         continue;
       }
-      collect_block_hints(
-        block,
-        viewport_top,
-        viewport_bottom,
-        margin,
-        &mut targets,
-      );
+      collect_block_hints(block, viewport_top, viewport_bottom, margin, &mut targets);
     }
 
     if targets.is_empty() {
@@ -1275,10 +1267,10 @@ impl App {
         self.request_redraw();
       }
       Key::Named(NamedKey::Backspace) => {
-        if let Some(state) = self.hint.as_mut() {
-          if state.typed.pop().is_some() {
-            self.request_redraw();
-          }
+        if let Some(state) = self.hint.as_mut()
+          && state.typed.pop().is_some()
+        {
+          self.request_redraw();
         }
       }
       // `?` and `/` cancel hint mode and immediately open the
@@ -1335,7 +1327,12 @@ impl App {
         HintAction::CopyCode(_) => ToastKind::Copied,
       };
       self.fire_hint_action(target.action);
-      self.show_toast(toast_kind, target.badge_x, target.badge_y, target.align_right);
+      self.show_toast(
+        toast_kind,
+        target.badge_x,
+        target.badge_y,
+        target.align_right,
+      );
       return;
     }
 
@@ -1378,10 +1375,10 @@ impl App {
   /// the toast has expired, drop it; the follow-up redraw clears
   /// the badge from the surface.
   fn check_toast_deadline(&mut self) {
-    if let Some(t) = self.toast.as_ref() {
-      if Instant::now() >= t.expires_at {
-        self.toast = None;
-      }
+    if let Some(t) = self.toast.as_ref()
+      && Instant::now() >= t.expires_at
+    {
+      self.toast = None;
     }
   }
 
@@ -1425,7 +1422,7 @@ impl App {
           }
           let center = block.y + block.h / 2.0;
           let dist = (center - viewport_center).abs();
-          if best.as_ref().map_or(true, |(d, ..)| dist < *d) {
+          if best.as_ref().is_none_or(|(d, ..)| dist < *d) {
             let badge_y = block.y.max(viewport_top + margin);
             let badge_x = block.x + margin;
             best = Some((dist, source.clone(), badge_x, badge_y));
@@ -1613,8 +1610,7 @@ impl App {
       return;
     };
     let max = (laid.total_height - self.viewport_h()).max(0.0);
-    self.scroll_y =
-      (target_y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+    self.scroll_y = (target_y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
     crate::trace!(
       "footnote_jump '{}' {} -> y={}",
       label,
@@ -1682,14 +1678,13 @@ impl App {
       self.painter.paint_blank(&mut frame, &theme);
     }
 
-    if let Some(sel) = self.selection {
-      if !sel.is_empty() {
-        if let Some(laid) = self.laid.as_ref() {
-          self
-            .painter
-            .paint_selection(&mut frame, laid, &sel, &theme, self.scroll_y);
-        }
-      }
+    if let Some(sel) = self.selection
+      && !sel.is_empty()
+      && let Some(laid) = self.laid.as_ref()
+    {
+      self
+        .painter
+        .paint_selection(&mut frame, laid, &sel, &theme, self.scroll_y);
     }
 
     let overlay_scale = self.zoom * self.dpi_scale.max(1.0);
@@ -1729,6 +1724,7 @@ impl App {
         .paint_help_overlay(&mut frame, &theme, overlay_scale);
     }
 
+    #[allow(clippy::drop_non_drop)]
     drop(frame);
     buffer.present().expect("present");
 
@@ -2057,9 +2053,15 @@ fn collect_block_hints(
       ..
     } => {
       for link in links {
-        if let Some((bx, by)) =
-          first_visible_run_anchor(buffer, block.x, block.y, link.byte_start, link.byte_end, viewport_top, viewport_bottom)
-        {
+        if let Some((bx, by)) = first_visible_run_anchor(
+          buffer,
+          block.x,
+          block.y,
+          link.byte_start,
+          link.byte_end,
+          viewport_top,
+          viewport_bottom,
+        ) {
           out.push(HintTarget {
             action: HintAction::FollowLink(link.target.clone()),
             badge_x: bx,
@@ -2069,9 +2071,15 @@ fn collect_block_hints(
         }
       }
       for c in code_runs {
-        if let Some((bx, by)) =
-          first_visible_run_anchor(buffer, block.x, block.y, c.byte_start, c.byte_end, viewport_top, viewport_bottom)
-        {
+        if let Some((bx, by)) = first_visible_run_anchor(
+          buffer,
+          block.x,
+          block.y,
+          c.byte_start,
+          c.byte_end,
+          viewport_top,
+          viewport_bottom,
+        ) {
           let snippet = extract_buffer_substring(buffer, c.byte_start, c.byte_end);
           if snippet.is_empty() {
             continue;
@@ -2103,8 +2111,8 @@ fn collect_block_hints(
       let visible = (bot - top).max(0.0);
       let hits_70 = block.h > 0.0 && visible / block.h >= 0.70;
       let buf_origin_y = block.y + *pad_y;
-      let hits_line = hits_70
-        || any_full_line_visible(buffer, buf_origin_y, viewport_top, viewport_bottom);
+      let hits_line =
+        hits_70 || any_full_line_visible(buffer, buf_origin_y, viewport_top, viewport_bottom);
       if !hits_line {
         return;
       }
