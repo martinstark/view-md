@@ -147,6 +147,7 @@ pub struct TableCellLayout {
   pub underlines: Vec<UnderlineRun>,
   pub strikes: Vec<UnderlineRun>,
   pub code_runs: Vec<UnderlineRun>,
+  pub links: Vec<LinkRange>,
 }
 
 #[derive(Clone)]
@@ -599,7 +600,7 @@ fn layout_table(
     let mut laid_cells: Vec<TableCellLayout> = Vec::new();
     for (i, cell) in cells.iter().enumerate() {
       let runs = build_runs(cell, theme);
-      let (underlines, strikes, code_runs, _links) = compute_runs(&runs);
+      let (underlines, strikes, code_runs, links) = compute_runs(&runs);
       let buf = build_buffer(
         fs,
         &runs,
@@ -621,6 +622,7 @@ fn layout_table(
         underlines,
         strikes,
         code_runs,
+        links,
       });
     }
     TableRowLayout {

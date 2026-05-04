@@ -1200,29 +1200,53 @@ impl App {
       if cy < block.y || cy > block.y + block.h {
         continue;
       }
-      if let LaidKind::Text { buffer, links, .. } = &block.kind {
-        if links.is_empty() {
-          continue;
-        }
-        let local_x = cx - block.x;
-        let local_y = cy - block.y;
-        for run in buffer.layout_runs() {
-          let run_top = run.line_top;
-          let run_bot = run_top + buffer.metrics().line_height;
-          if local_y < run_top || local_y > run_bot {
-            continue;
+      match &block.kind {
+        LaidKind::Text { buffer, links, .. } => {
+          if let Some(t) = hit_test_links_in_buffer(buffer, links, cx - block.x, cy - block.y) {
+            return Some(t);
           }
-          for g in run.glyphs.iter() {
-            if local_x < g.x || local_x > g.x + g.w {
+        }
+        LaidKind::Table { rows, .. } => {
+          for row in rows.iter() {
+            let row_y_abs = block.y + row.y_top;
+            if cy < row_y_abs || cy > row_y_abs + row.h {
               continue;
             }
-            for link in links {
-              if g.start >= link.byte_start && g.end <= link.byte_end {
-                return Some(link.target.clone());
+            for cell in &row.cells {
+              if cell.links.is_empty() {
+                continue;
+              }
+              // Mirror paint_table_cell's positioning: pad scales with
+              // cell.w, then alignment offset shifts left/right within
+              // the cell's text column.
+              let pad_x = (cell.w * 0.04).clamp(6.0, 24.0);
+              let pad_y = (pad_x * 0.7).max(6.0);
+              let cell_text_w = (cell.w - pad_x * 2.0).max(0.0);
+              let actual_text_w = cell
+                .buffer
+                .layout_runs()
+                .map(|r| r.line_w)
+                .fold(0.0_f32, f32::max);
+              let extra = (cell_text_w - actual_text_w).max(0.0);
+              let dx = match cell.align {
+                crate::doc::CellAlign::Left => 0.0,
+                crate::doc::CellAlign::Center => extra / 2.0,
+                crate::doc::CellAlign::Right => extra,
+              };
+              let text_origin_x = block.x + cell.x + pad_x + dx;
+              let text_origin_y = row_y_abs + pad_y;
+              if let Some(t) = hit_test_links_in_buffer(
+                &cell.buffer,
+                &cell.links,
+                cx - text_origin_x,
+                cy - text_origin_y,
+              ) {
+                return Some(t);
               }
             }
           }
         }
+        _ => {}
       }
     }
     None
@@ -1527,6 +1551,40 @@ fn push_line_matches(
     }
     start = end;
   }
+}
+
+/// Hit-test a (local_x, local_y) point against a buffer's link ranges.
+/// `local_*` are coordinates relative to the buffer's draw origin —
+/// the same origin `draw_buffer` uses. Returns the link target whose
+/// glyph the point falls inside, if any.
+fn hit_test_links_in_buffer(
+  buffer: &cosmic_text::Buffer,
+  links: &[crate::layout::LinkRange],
+  local_x: f32,
+  local_y: f32,
+) -> Option<crate::layout::LinkTarget> {
+  if links.is_empty() {
+    return None;
+  }
+  let lh = buffer.metrics().line_height;
+  for run in buffer.layout_runs() {
+    let run_top = run.line_top;
+    let run_bot = run_top + lh;
+    if local_y < run_top || local_y > run_bot {
+      continue;
+    }
+    for g in run.glyphs.iter() {
+      if local_x < g.x || local_x > g.x + g.w {
+        continue;
+      }
+      for link in links {
+        if g.start >= link.byte_start && g.end <= link.byte_end {
+          return Some(link.target.clone());
+        }
+      }
+    }
+  }
+  None
 }
 
 /// Convert heading text to a GitHub-style anchor slug:
