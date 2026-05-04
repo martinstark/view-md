@@ -1,6 +1,7 @@
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 
 use crate::doc::Inline;
+use crate::layout::LinkTarget;
 use crate::text::{FONT_MONO, FONT_SANS, mono_features, sans_features};
 use crate::theme::Theme;
 
@@ -43,7 +44,7 @@ impl StyleState {
 
 pub struct StyledRuns {
   pub spans: Vec<StyleSpan>,
-  pub links: Vec<String>,
+  pub links: Vec<LinkTarget>,
 }
 
 pub fn build_runs(inlines: &[Inline], theme: &Theme) -> StyledRuns {
@@ -82,7 +83,7 @@ fn walk(inlines: &[Inline], state: StyleState, theme: &Theme, out: &mut StyledRu
       }
       Inline::Link { href, kids } => {
         let idx = out.links.len();
-        out.links.push(href.clone());
+        out.links.push(LinkTarget::Url(href.clone()));
         let mut s2 = state;
         s2.color = Some(theme.link);
         s2.underline = true;
@@ -96,8 +97,11 @@ fn walk(inlines: &[Inline], state: StyleState, theme: &Theme, out: &mut StyledRu
         push(out, format!("[{}]", alt), s2);
       }
       Inline::FootnoteRef(label) => {
+        let idx = out.links.len();
+        out.links.push(LinkTarget::Footnote(label.clone()));
         let mut s2 = state;
         s2.color = Some(theme.link);
+        s2.link = Some(idx);
         push(out, format!("[{}]", label), s2);
       }
       Inline::SoftBreak => push(out, " ".into(), state),

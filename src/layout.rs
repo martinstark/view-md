@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -49,6 +50,18 @@ pub struct LaidDoc {
   /// 1:1 map onto `heading_ys` (same length, same order). Used by the
   /// resize anchor logic to snap to a nearby heading instead of mid-text.
   pub heading_block_idxs: Vec<usize>,
+  /// Resolved scroll targets for clickable footnote refs and back-links.
+  /// Built in a single pass at the end of `layout()` from the per-block
+  /// `LinkRange`s. `def_y` is always populated (one definition per
+  /// label); `first_ref_y` is `None` if the doc has a definition with
+  /// no body reference (rare but legal).
+  pub footnote_jumps: HashMap<String, FootnoteJump>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FootnoteJump {
+  pub def_y: f32,
+  pub first_ref_y: Option<f32>,
 }
 
 pub struct LaidBlock {
@@ -133,7 +146,19 @@ pub struct UnderlineRun {
 pub struct LinkRange {
   pub byte_start: usize,
   pub byte_end: usize,
-  pub href: String,
+  pub target: LinkTarget,
+}
+
+#[derive(Clone, Debug)]
+pub enum LinkTarget {
+  /// External URL (or `#fragment` etc) — opened via `opener`.
+  Url(String),
+  /// Footnote reference `[^label]` in body text. Click scrolls to the
+  /// matching definition row.
+  Footnote(String),
+  /// Back-arrow on a footnote definition. Click scrolls to the first
+  /// reference in body text with the same label.
+  FootnoteBack(String),
 }
 
 pub fn layout(
@@ -271,6 +296,8 @@ pub fn layout_parallel(
     b.y += pad_y;
   }
 
+  let footnote_jumps = build_footnote_jumps(&blocks);
+
   LaidDoc {
     blocks,
     total_height: y + pad_y * 2.0,
@@ -280,7 +307,48 @@ pub fn layout_parallel(
     heading_ys,
     block_ys,
     heading_block_idxs,
+    footnote_jumps,
   }
+}
+
+/// Walk the laid blocks once, collecting per-label scroll targets:
+/// `def_y` from FootnoteBack ranges (one per definition), `first_ref_y`
+/// from the first Footnote range encountered in document order.
+fn build_footnote_jumps(blocks: &[LaidBlock]) -> HashMap<String, FootnoteJump> {
+  let mut jumps: HashMap<String, FootnoteJump> = HashMap::new();
+  for block in blocks {
+    let LaidKind::Text { links, .. } = &block.kind else {
+      continue;
+    };
+    for link in links {
+      match &link.target {
+        LinkTarget::Footnote(label) => {
+          jumps
+            .entry(label.clone())
+            .and_modify(|j| {
+              if j.first_ref_y.is_none() {
+                j.first_ref_y = Some(block.y);
+              }
+            })
+            .or_insert(FootnoteJump {
+              def_y: 0.0,
+              first_ref_y: Some(block.y),
+            });
+        }
+        LinkTarget::FootnoteBack(label) => {
+          jumps
+            .entry(label.clone())
+            .and_modify(|j| j.def_y = block.y)
+            .or_insert(FootnoteJump {
+              def_y: block.y,
+              first_ref_y: None,
+            });
+        }
+        LinkTarget::Url(_) => {}
+      }
+    }
+  }
+  jumps
 }
 
 struct Ctx {
@@ -559,18 +627,13 @@ fn layout_footnotes(
   let label_cap = FOOTNOTE_LABEL_CAP * ctx.scale;
   let label_max_w = (label_cap - label_pad).max(8.0);
 
-  let label_bufs: Vec<Buffer> = defs
+  // Each label renders as `"<label>. ↩"`. The whole buffer is wired to
+  // LinkTarget::FootnoteBack(label) so any click in the cell scrolls
+  // back to the first reference; the arrow makes the affordance visible.
+  let label_texts: Vec<String> = defs.iter().map(|d| format!("{}. ↩", d.label)).collect();
+  let label_bufs: Vec<Buffer> = label_texts
     .iter()
-    .map(|def| {
-      make_plain_buffer(
-        fs,
-        &format!("{}.", def.label),
-        label_fs,
-        label_lh,
-        label_max_w,
-        FONT_SANS,
-      )
-    })
+    .map(|t| make_plain_buffer(fs, t, label_fs, label_lh, label_max_w, FONT_SANS))
     .collect();
   let measured = label_bufs
     .iter()
@@ -584,6 +647,11 @@ fn layout_footnotes(
       total += LIST_ITEM_GAP * 2.0;
     }
     let lh = buffer_height(&label_buf);
+    let label_links = vec![LinkRange {
+      byte_start: 0,
+      byte_end: label_texts[i].len(),
+      target: LinkTarget::FootnoteBack(def.label.clone()),
+    }];
     all.push(LaidBlock {
       y: total,
       h: lh,
@@ -594,7 +662,7 @@ fn layout_footnotes(
         underlines: Vec::new(),
         strikes: Vec::new(),
         code_runs: Vec::new(),
-        links: Vec::new(),
+        links: label_links,
       },
     });
     let body_x = x + col_w;
@@ -982,7 +1050,7 @@ fn compute_runs(
       links.push(LinkRange {
         byte_start: start,
         byte_end: end,
-        href: runs.links[idx].clone(),
+        target: runs.links[idx].clone(),
       });
     }
     byte = end;

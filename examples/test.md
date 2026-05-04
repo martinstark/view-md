@@ -1,10 +1,10 @@
 # vmd smoke test
 
-A minimal document to verify rendering.
+A minimal document to verify rendering.[^1]
 
 ## Inline formatting
 
-This is **bold**, this is *italic*, this is ~~struck through~~, and this is `inline code`.
+This is **bold**, this is *italic*, this is ~~struck through~~, and this is `inline code`.[^edge]
 
 A link to [example.com](https://example.com) — clicking should open the system browser.
 
@@ -276,10 +276,6 @@ A paragraph between two more rules.
 6. continues
 7. and ends here
 
-## Footnote
+[^1]: And here is the footnote body. Click the ↩ to jump back to the reference.
 
-Here is a sentence with a footnote.[^1] And another reference[^edge] later in the doc.
-
-[^1]: And here is the footnote body.
-
-[^edge]: A second footnote, demonstrating the definition list at the end.
+[^edge]: A second footnote with a word-form label.
