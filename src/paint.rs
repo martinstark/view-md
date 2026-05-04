@@ -203,6 +203,55 @@ fn ct_to_argb(c: Color) -> u32 {
   ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | (c.b() as u32)
 }
 
+/// Convert a tiny-skia `SkColor` (RGBA float channels) to a cosmic-text
+/// `Color` (RGBA u8). Drops alpha, since text colors in this app
+/// always render fully opaque against their badge backgrounds.
+#[inline]
+fn sk_to_ct(c: SkColor) -> Color {
+  Color::rgb(
+    (c.red() * 255.0) as u8,
+    (c.green() * 255.0) as u8,
+    (c.blue() * 255.0) as u8,
+  )
+}
+
+/// Linear blend of two colors as u8 channels. Returns the cosmic-text
+/// `Color` corresponding to `(1 - t) * a + t * b`. Used to derive
+/// the dim-prefix color when narrow-as-you-type narrows the visible
+/// hint set: midpoint of (badge bg, label fg) reads as a faded label.
+#[inline]
+fn blend_sk_ct(a: SkColor, b: Color, t: f32) -> Color {
+  let ar = (a.red() * 255.0) as f32;
+  let ag = (a.green() * 255.0) as f32;
+  let ab = (a.blue() * 255.0) as f32;
+  let br = b.r() as f32;
+  let bg = b.g() as f32;
+  let bb = b.b() as f32;
+  Color::rgb(
+    ((1.0 - t) * ar + t * br) as u8,
+    ((1.0 - t) * ag + t * bg) as u8,
+    ((1.0 - t) * ab + t * bb) as u8,
+  )
+}
+
+/// Geometric and typographic constants shared by hint badges and
+/// toasts. Multiplied by `zoom × dpi_scale` at use sites so badges
+/// track +/- zoom and HiDPI the same way other overlays do.
+const HINT_BADGE_FS: f32 = 11.0;
+const HINT_BADGE_LH: f32 = 14.0;
+const HINT_BADGE_PAD_X: f32 = 5.0;
+const HINT_BADGE_PAD_Y: f32 = 2.0;
+const HINT_BADGE_RADIUS: f32 = 3.0;
+const HINT_BADGE_BORDER_W: f32 = 1.0;
+/// Visual gap between badge and the element it labels when
+/// `align_right` keeps the badge outside the element.
+const HINT_BADGE_GAP: f32 = 2.0;
+/// Minimum distance from any frame edge for hint and toast badges.
+/// Even if the natural anchor sits flush against a window edge, the
+/// badge gets pushed inward by this much so it never tucks into the
+/// surface bezel. Multiplied by `scale` at the clamp site.
+const HINT_BADGE_EDGE_INSET: f32 = 8.0;
+
 /// Render an opaque, anti-aliased rounded-rect fill via a per-call
 /// scratch `Pixmap` and composite into the frame. The path's bounding
 /// box is the scratch size, which keeps the per-pixel blend cost
@@ -499,12 +548,13 @@ impl Painter {
       ("0", "reset zoom"),
       ("j / k", "line down / up"),
       ("d / u", "half page down / up"),
-      ("f / b / Space", "full page down / up"),
+      ("Space / b", "full page down / up"),
       ("g / G", "top / bottom"),
       ("] / [", "next / prev heading"),
       ("} / {", "next / prev block"),
       ("y", "yank visible code block"),
       ("/", "search; Enter cycles, Esc closes"),
+      ("f", "hint mode (link / code / footnote)"),
       ("?", "toggle this help"),
     ];
 
@@ -606,6 +656,206 @@ impl Painter {
       );
       row_y += row_h;
     }
+  }
+
+  /// Paint vimium-style hint badges. Each badge sits at its target's
+  /// captured `(badge_x, badge_y)`, offset by `-scroll_y` for live
+  /// scroll-while-frozen safety (scroll is suppressed by the input
+  /// FSM today, but the painter doesn't need to know that). When the
+  /// user has typed a prefix, only labels still matching are drawn,
+  /// with the typed prefix in a muted color so progress is visible.
+  /// Vimium-style hint badges. Bg = `theme.link` (the same color
+  /// used for hyperlinks in body text — the badge reads as
+  /// "interactive" because that hue already means "interactive"
+  /// here); fg = `theme.bg` so labels punch hard against the link
+  /// blue in either theme. When the user has typed a prefix, only
+  /// labels still matching are drawn, with the typed prefix in a
+  /// midpoint-blended color so progress is visible.
+  pub fn paint_hints(
+    &mut self,
+    frame: &mut Frame,
+    theme: &Theme,
+    hint: &crate::app::HintState,
+    scroll_y: f32,
+    scale: f32,
+  ) {
+    let bg = ct_to_sk(theme.link);
+    let fg = sk_to_ct(theme.bg);
+    let fg_dim = blend_sk_ct(bg, fg, 0.5);
+    let typed = &hint.typed;
+
+    for (target, label) in hint.targets.iter().zip(hint.labels.iter()) {
+      if !label.starts_with(typed) {
+        continue;
+      }
+      let runs: Vec<(&str, Color)> = if typed.is_empty() {
+        vec![(label.as_str(), fg)]
+      } else {
+        let plen = typed.len();
+        vec![(&label[..plen], fg_dim), (&label[plen..], fg)]
+      };
+      self.paint_badge(
+        frame,
+        &runs,
+        target.badge_x,
+        target.badge_y,
+        target.align_right,
+        bg,
+        theme.border,
+        scroll_y,
+        scale,
+      );
+    }
+  }
+
+  /// Acknowledgement badge ("Opened" / "Copied") shown for ~1 s
+  /// after firing a hint or yanking via `y`. Same shape as the
+  /// hint badges so the badge feels like a *state change* of the
+  /// just-pressed key — only the color hue differs:
+  ///
+  ///   - "Copied" → `theme.alert_tip` (green): clipboard success.
+  ///   - "Opened" → `theme.alert_note` (blue): navigation handed off.
+  pub fn paint_toast(
+    &mut self,
+    frame: &mut Frame,
+    theme: &Theme,
+    toast: &crate::app::Toast,
+    scroll_y: f32,
+    scale: f32,
+  ) {
+    let (br, bgch, bb) = match toast.kind {
+      crate::app::ToastKind::Copied => theme.alert_tip,
+      crate::app::ToastKind::Opened => theme.alert_note,
+    };
+    let bg = SkColor::from_rgba8(br, bgch, bb, 0xff);
+    let fg = sk_to_ct(theme.bg);
+    let text = toast.kind.text();
+    self.paint_badge(
+      frame,
+      &[(text, fg)],
+      toast.badge_x,
+      toast.badge_y,
+      toast.align_right,
+      bg,
+      theme.border,
+      scroll_y,
+      scale,
+    );
+  }
+
+  /// Shared rounded-rect badge renderer. `runs` is the rich-text
+  /// content (1 run for plain labels, 2 runs for narrow-mode hint
+  /// badges); `bg` fills the badge interior and `border` strokes a
+  /// 1 px outline. `align_right=true` puts the badge to the LEFT of
+  /// `(badge_x_anchor, badge_y_anchor)` (used for inline link/code
+  /// hints so the element stays unobscured); `false` puts the badge
+  /// at that point exactly (used for code-block hints where the
+  /// anchor sits in the block's left padding gutter).
+  fn paint_badge(
+    &mut self,
+    frame: &mut Frame,
+    runs: &[(&str, Color)],
+    badge_x_anchor: f32,
+    badge_y_anchor: f32,
+    align_right: bool,
+    bg: SkColor,
+    border: SkColor,
+    scroll_y: f32,
+    scale: f32,
+  ) {
+    let fs = HINT_BADGE_FS * scale;
+    let lh = HINT_BADGE_LH * scale;
+    let pad_x = HINT_BADGE_PAD_X * scale;
+    let pad_y = HINT_BADGE_PAD_Y * scale;
+    let radius = HINT_BADGE_RADIUS * scale;
+    let border_w = (HINT_BADGE_BORDER_W * scale).max(1.0);
+    let gap = HINT_BADGE_GAP * scale;
+
+    // Total label byte length sets a generous initial buffer width;
+    // we measure post-shape to size the badge precisely.
+    let total_len: usize = runs.iter().map(|(s, _)| s.len()).sum();
+    let buf_w = (total_len as f32 * fs) + pad_x * 2.0 + 16.0;
+    let mut buf = cosmic_text::Buffer::new(&mut self.fs, cosmic_text::Metrics::new(fs, lh));
+    buf.set_size(Some(buf_w), None);
+    let base_attrs = cosmic_text::Attrs::new()
+      .family(cosmic_text::Family::Name(crate::text::FONT_SANS))
+      .font_features(crate::text::sans_features())
+      .weight(cosmic_text::Weight::BOLD);
+    let default_color = runs.first().map(|(_, c)| *c).unwrap_or(Color::rgb(0, 0, 0));
+    if runs.len() == 1 {
+      buf.set_text(
+        runs[0].0,
+        &base_attrs.clone().color(runs[0].1),
+        cosmic_text::Shaping::Advanced,
+        None,
+      );
+    } else {
+      let rich: Vec<(&str, cosmic_text::Attrs)> = runs
+        .iter()
+        .map(|(s, c)| (*s, base_attrs.clone().color(*c)))
+        .collect();
+      buf.set_rich_text(
+        rich.into_iter(),
+        &base_attrs.clone().color(default_color),
+        cosmic_text::Shaping::Advanced,
+        None,
+      );
+    }
+    buf.shape_until_scroll(&mut self.fs, false);
+
+    let measured = buf
+      .layout_runs()
+      .map(|r| r.line_w)
+      .fold(0.0_f32, f32::max);
+    let badge_w = measured + pad_x * 2.0;
+    let badge_h = lh + pad_y * 2.0;
+
+    let bx = if align_right {
+      badge_x_anchor - badge_w - gap
+    } else {
+      badge_x_anchor
+    };
+    let by = badge_y_anchor - scroll_y;
+    // Final on-surface clamp with an 8 px inset on all four edges.
+    // With `align_right`, an element at the very left edge produces
+    // a negative `bx`; clamping pushes the badge back on-screen,
+    // which then overlaps the element — accepted fallback when
+    // there's literally no left-side room. The inset also nudges
+    // viewport-clipped code-block badges inward from the very top.
+    let inset = HINT_BADGE_EDGE_INSET * scale;
+    let max_x = (frame.width as f32 - badge_w - inset).max(inset);
+    let bx = bx.clamp(inset, max_x);
+    let max_y = (frame.height as f32 - badge_h - inset).max(inset);
+    let by = by.clamp(inset, max_y);
+
+    fill_rounded_rect_aa(
+      frame,
+      bx as i32,
+      by as i32,
+      badge_w as u32,
+      badge_h as u32,
+      radius,
+      bg,
+    );
+    stroke_rounded_rect_aa(
+      frame,
+      bx as i32,
+      by as i32,
+      badge_w as u32,
+      badge_h as u32,
+      radius,
+      border,
+      border_w,
+    );
+    draw_buffer(
+      frame,
+      &buf,
+      &mut self.fs,
+      &mut self.swash,
+      bx + pad_x,
+      by + pad_y,
+      default_color,
+    );
   }
 }
 

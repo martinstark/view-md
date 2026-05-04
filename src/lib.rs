@@ -248,6 +248,8 @@ pub fn run(
     anim_next_deadline: None,
     empty_reload_deadline: None,
     search: None,
+    hint: None,
+    toast: None,
   };
   event_loop.run_app(&mut app).expect("run_app");
 }
