@@ -134,13 +134,27 @@ pub struct App {
   pub search: Option<SearchState>,
 }
 
-/// In-doc search state. Maintains the current query, the indices of
-/// top-level doc blocks containing matches (in document order), and
-/// the cursor into that list. Jumping cycles forward through the list.
+/// In-doc search state. Maintains the current query, all match
+/// occurrences in document order (one entry per occurrence, even if
+/// multiple match within the same block), and the cursor into that
+/// list. Jumping cycles forward through the list.
 pub struct SearchState {
   pub query: String,
-  pub matches: Vec<usize>,
+  pub matches: Vec<SearchMatch>,
   pub current: Option<usize>,
+}
+
+/// One match occurrence: the laid block it lives in, which buffer
+/// line within that block (always 0 for paragraph/heading buffers,
+/// per-source-line for code blocks), and the byte range relative to
+/// that line's text. Stored at the granularity the painter needs
+/// for `Buffer::layout_runs`.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchMatch {
+  pub laid_block_idx: usize,
+  pub line_i: usize,
+  pub byte_start: usize,
+  pub byte_end: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -964,28 +978,38 @@ impl App {
     }
   }
 
-  /// Re-walks the doc against the current query, jumps to the first
-  /// match. Called on every query mutation (char append, backspace).
+  /// Re-walks the laid doc against the current query, populates the
+  /// matches list, and jumps to the first occurrence. Called on every
+  /// query mutation (char append, backspace).
   fn recompute_search(&mut self) {
     let Some(state) = self.search.as_mut() else {
       return;
     };
-    let q = state.query.to_lowercase();
     state.matches.clear();
     state.current = None;
-    if q.is_empty() {
+    let q_lower = state.query.to_lowercase();
+    if q_lower.is_empty() {
       self.request_redraw();
       return;
     }
-    for (i, b) in self.doc.blocks.iter().enumerate() {
-      if block_to_text(b).to_lowercase().contains(&q) {
-        state.matches.push(i);
+    let Some(laid) = self.laid.as_ref() else {
+      self.request_redraw();
+      return;
+    };
+    for (idx, lb) in laid.blocks.iter().enumerate() {
+      match &lb.kind {
+        LaidKind::Text { buffer, .. } | LaidKind::CodeBlock { buffer, .. } => {
+          for (line_i, line) in buffer.lines.iter().enumerate() {
+            push_line_matches(line.text(), &q_lower, idx, line_i, &mut state.matches);
+          }
+        }
+        _ => {}
       }
     }
     if !state.matches.is_empty() {
       state.current = Some(0);
-      let target = state.matches[0];
-      self.scroll_to_block(target);
+      let m = state.matches[0];
+      self.scroll_to_match(m);
     }
     self.request_redraw();
   }
@@ -999,24 +1023,50 @@ impl App {
     }
     let next = state.current.map(|c| (c + 1) % state.matches.len()).unwrap_or(0);
     state.current = Some(next);
-    let target = state.matches[next];
-    self.scroll_to_block(target);
+    let m = state.matches[next];
+    self.scroll_to_match(m);
     self.request_redraw();
   }
 
-  /// Scrolls so the i-th top-level doc block sits near viewport top.
-  /// Uses `block_ys` (one entry per top-level block) and applies the
-  /// same heading-style breathing room as `]`/`[` and anchor jumps.
-  fn scroll_to_block(&mut self, doc_block_idx: usize) {
+  /// Build a per-laid-block table of search hits for the current
+  /// query, marking the active occurrence so paint can color it
+  /// distinctly. Returns `None` when search is closed or has no
+  /// matches; otherwise a Vec sized to `laid.blocks.len()` with
+  /// each slot's hits in document order.
+  fn search_hits_by_block(&self) -> Option<Vec<Vec<crate::paint::SearchHit>>> {
+    let state = self.search.as_ref()?;
+    if state.matches.is_empty() {
+      return None;
+    }
+    let laid = self.laid.as_ref()?;
+    let mut out: Vec<Vec<crate::paint::SearchHit>> =
+      (0..laid.blocks.len()).map(|_| Vec::new()).collect();
+    for (i, m) in state.matches.iter().enumerate() {
+      if m.laid_block_idx >= out.len() {
+        continue;
+      }
+      out[m.laid_block_idx].push(crate::paint::SearchHit {
+        line_i: m.line_i,
+        byte_start: m.byte_start,
+        byte_end: m.byte_end,
+        active: state.current == Some(i),
+      });
+    }
+    Some(out)
+  }
+
+  /// Scrolls so the laid block containing the match sits near
+  /// viewport top, with heading-style breathing room.
+  fn scroll_to_match(&mut self, m: SearchMatch) {
     let Some(laid) = self.laid.as_ref() else {
       return;
     };
-    let Some(&y) = laid.block_ys.get(doc_block_idx) else {
+    let Some(block) = laid.blocks.get(m.laid_block_idx) else {
       return;
     };
     let max = (laid.total_height - self.viewport_h()).max(0.0);
     self.scroll_y =
-      (y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
+      (block.y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
   }
 
   fn current_surface_width(&self) -> f32 {
@@ -1200,6 +1250,11 @@ impl App {
       crate::trace!("relayout_full_highlight_done");
     }
 
+    // Compute search hits before grabbing the surface mutably below —
+    // builder borrows `self` immutably and would conflict with the
+    // surface's mutable borrow, which has to live until present().
+    let hits_by_block = self.search_hits_by_block();
+
     let Some(surface) = self.surface.as_mut() else {
       return;
     };
@@ -1215,6 +1270,9 @@ impl App {
     let (fw, fh) = self.surface_size;
     let mut frame = Frame::new(&mut buffer, fw, fh);
     if let Some(laid) = self.laid.as_ref() {
+      let hits_view = hits_by_block.as_ref().map(|v| crate::paint::SearchHits {
+        by_block: v.as_slice(),
+      });
       self.painter.paint_doc(
         &mut frame,
         laid,
@@ -1222,6 +1280,7 @@ impl App {
         self.scroll_y,
         &self.images,
         anim_elapsed_ms,
+        hits_view.as_ref(),
       );
     } else {
       self.painter.paint_blank(&mut frame, &theme);
@@ -1392,61 +1451,43 @@ fn block_full_text(block: &crate::layout::LaidBlock) -> String {
   lines.join("\n")
 }
 
-/// Flatten a top-level block to plain text for substring search.
-/// Recurses into structural containers (Quote, List items, Alert,
-/// Footnotes, Table cells); CodeBlock yields its raw source; Image
-/// yields its alt text. Inline mixing within a paragraph delegates
-/// to `doc::flatten_text` so links / em / strong / inline code all
-/// contribute their textual content.
-fn block_to_text(b: &crate::doc::Block) -> String {
-  let mut out = String::new();
-  push_block_text(b, &mut out);
-  out
-}
-
-fn push_block_text(b: &crate::doc::Block, out: &mut String) {
-  use crate::doc::Block;
-  match b {
-    Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-      out.push_str(&crate::doc::flatten_text(inlines));
+/// Find every case-insensitive occurrence of `q_lower` in `line_text`
+/// and push a `SearchMatch` for each, byte-anchored to the original
+/// (un-lowercased) line. We lowercase only as a comparison key —
+/// some Unicode cases change byte length under to_lowercase, but
+/// case-folding in ASCII text (the common case) preserves length, so
+/// the offsets line up with the original text.
+fn push_line_matches(
+  line_text: &str,
+  q_lower: &str,
+  laid_block_idx: usize,
+  line_i: usize,
+  out: &mut Vec<SearchMatch>,
+) {
+  if q_lower.is_empty() {
+    return;
+  }
+  let lower = line_text.to_lowercase();
+  // Bail if lowercasing changed length (would skew byte offsets) —
+  // matches in non-ASCII text won't highlight rather than highlight
+  // the wrong glyphs. Search-in-block-list still finds them.
+  if lower.len() != line_text.len() {
+    return;
+  }
+  let mut start = 0;
+  while let Some(pos) = lower[start..].find(q_lower) {
+    let abs = start + pos;
+    let end = abs + q_lower.len();
+    out.push(SearchMatch {
+      laid_block_idx,
+      line_i,
+      byte_start: abs,
+      byte_end: end,
+    });
+    if end == abs {
+      break;
     }
-    Block::CodeBlock { code, .. } => out.push_str(code),
-    Block::Quote(inner) | Block::Alert { blocks: inner, .. } => {
-      for b in inner {
-        push_block_text(b, out);
-        out.push(' ');
-      }
-    }
-    Block::List { items, .. } => {
-      for item in items {
-        for b in &item.blocks {
-          push_block_text(b, out);
-          out.push(' ');
-        }
-      }
-    }
-    Block::Table { head, rows, .. } => {
-      for row in head {
-        out.push_str(&crate::doc::flatten_text(row));
-        out.push(' ');
-      }
-      for row in rows {
-        for cell in row {
-          out.push_str(&crate::doc::flatten_text(cell));
-          out.push(' ');
-        }
-      }
-    }
-    Block::Footnotes(defs) => {
-      for def in defs {
-        for b in &def.blocks {
-          push_block_text(b, out);
-          out.push(' ');
-        }
-      }
-    }
-    Block::Image { alt, .. } => out.push_str(alt),
-    Block::Rule => {}
+    start = end;
   }
 }
 
