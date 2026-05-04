@@ -1392,24 +1392,37 @@ fn paint_task_box(frame: &mut Frame, x: f32, y: f32, size: f32, checked: bool, t
   let outline = ct_to_sk(theme.muted);
   let stroke_w = (size * 0.12).max(1.5).round();
 
+  // Snap outer box to integer pixels. Without this, fractional `x`,
+  // `y`, `size` get truncated independently per channel and the
+  // rendered outer box drifts vs. the inner fill.
+  let ox = x.round() as i32;
+  let oy = y.round() as i32;
+  let outer = size.round() as i32;
+
   stroke_rounded_rect_aa(
     frame,
-    x as i32,
-    y as i32,
-    size as u32,
-    size as u32,
+    ox,
+    oy,
+    outer as u32,
+    outer as u32,
     size * 0.18,
     outline,
     stroke_w,
   );
 
   if checked {
-    let pad = size * 0.28;
+    // Use a single integer `pad` for all four sides — symmetric by
+    // construction. Inner is then `outer - 2*pad`, which means the
+    // gap between outer-box and inner-fill is exactly `pad` pixels
+    // on top, bottom, left, and right at every zoom level.
+    let pad = (size * 0.28).round() as i32;
+    let pad = pad.max(2);
+    let inner = (outer - 2 * pad).max(1);
     frame.fill_rect(
-      (x + pad) as i32,
-      (y + pad) as i32,
-      (size - pad * 2.0) as i32,
-      (size - pad * 2.0) as i32,
+      ox + pad,
+      oy + pad,
+      inner,
+      inner,
       ct_to_argb(theme.link),
     );
   }
