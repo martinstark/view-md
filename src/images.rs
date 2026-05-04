@@ -270,7 +270,7 @@ where
   for frame_result in iter {
     let Ok(frame) = frame_result else { break };
     let (n, d) = frame.delay().numer_denom_ms();
-    let raw_ms = if d == 0 { 100 } else { n / d };
+    let raw_ms = n.checked_div(d).unwrap_or(100);
     // Match browser behavior: clamp very-fast GIFs to 20ms (50 fps) so
     // the redraw loop doesn't burn CPU on adversarial encodings.
     let delay_ms = raw_ms.max(20);

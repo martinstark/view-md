@@ -743,7 +743,7 @@ fn layout_footnotes(
     .fold(0.0_f32, f32::max);
   let col_w = (measured + label_pad).min(label_cap);
 
-  for (i, (def, (label_buf, total_bytes))) in defs.iter().zip(label_bufs.into_iter()).enumerate() {
+  for (i, (def, (label_buf, total_bytes))) in defs.iter().zip(label_bufs).enumerate() {
     if i > 0 {
       total += LIST_ITEM_GAP * 2.0 * s;
     }
