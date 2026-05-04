@@ -347,7 +347,8 @@ impl Painter {
   /// Search overlay: a small bottom-center bar with `/<query>` on
   /// the left and `<i> / <n>` (or `no matches`) on the right.
   /// Drawn on top of the doc, beneath the help overlay scrim if
-  /// both are somehow active.
+  /// both are somehow active. Scales linearly with `scale` so the
+  /// overlay tracks +/- zoom and HiDPI.
   pub fn paint_search_overlay(
     &mut self,
     frame: &mut Frame,
@@ -355,12 +356,16 @@ impl Painter {
     query: &str,
     current: Option<usize>,
     total: usize,
+    scale: f32,
   ) {
-    let card_w = 480.0_f32;
-    let card_h = 36.0_f32;
-    let pad_x = 14.0_f32;
+    let card_w = 480.0 * scale;
+    let card_h = 36.0 * scale;
+    let pad_x = 14.0 * scale;
+    let bottom_margin = 24.0 * scale;
+    let radius = 8.0 * scale;
+    let right_col_w = 80.0 * scale;
     let cx = (frame.width as f32 - card_w) / 2.0;
-    let cy = frame.height as f32 - card_h - 24.0;
+    let cy = frame.height as f32 - card_h - bottom_margin;
 
     let card_bg = if theme.is_dark {
       SkColor::from_rgba8(0x16, 0x1b, 0x22, 0xff)
@@ -373,7 +378,7 @@ impl Painter {
       cy as i32,
       card_w as u32,
       card_h as u32,
-      8.0,
+      radius,
       card_bg,
     );
     stroke_rounded_rect_aa(
@@ -382,20 +387,22 @@ impl Painter {
       cy as i32,
       card_w as u32,
       card_h as u32,
-      8.0,
+      radius,
       theme.border,
-      1.0,
+      1.0 * scale,
     );
 
     // Left: "/<query>_". Trailing underscore stands in for a cursor
     // so the user sees their input continues here.
     let left = format!("/{}_", query);
+    let left_fs = 14.0 * scale;
+    let left_lh = 18.0 * scale;
     let left_buf = crate::layout::make_plain_buffer(
       &mut self.fs,
       &left,
-      14.0,
-      18.0,
-      card_w - pad_x * 2.0 - 80.0,
+      left_fs,
+      left_lh,
+      card_w - pad_x * 2.0 - right_col_w,
       crate::text::FONT_SANS,
     );
     draw_buffer(
@@ -404,7 +411,7 @@ impl Painter {
       &mut self.fs,
       &mut self.swash,
       cx + pad_x,
-      cy + (card_h - 18.0) / 2.0,
+      cy + (card_h - left_lh) / 2.0,
       theme.fg,
     );
 
@@ -418,12 +425,14 @@ impl Painter {
       format!("{i} / {total}")
     };
     if !right_text.is_empty() {
+      let right_fs = 12.0 * scale;
+      let right_lh = 16.0 * scale;
       let right_buf = crate::layout::make_plain_buffer(
         &mut self.fs,
         &right_text,
-        12.0,
-        16.0,
-        80.0,
+        right_fs,
+        right_lh,
+        right_col_w,
         crate::text::FONT_SANS,
       );
       // Right-align: measure and place at card right minus measured width.
@@ -438,13 +447,13 @@ impl Painter {
         &mut self.fs,
         &mut self.swash,
         cx + card_w - pad_x - measured,
-        cy + (card_h - 16.0) / 2.0,
+        cy + (card_h - right_lh) / 2.0,
         theme.muted,
       );
     }
   }
 
-  pub fn paint_help_overlay(&mut self, frame: &mut Frame, theme: &Theme) {
+  pub fn paint_help_overlay(&mut self, frame: &mut Frame, theme: &Theme, scale: f32) {
     // Dim the doc behind. Translucent black via alpha-composite — too
     // visible to skip the alpha math, so go through the scratch-pixmap
     // path the same way other AA fills do.
@@ -472,11 +481,19 @@ impl Painter {
       ("?", "toggle this help"),
     ];
 
-    let card_w = 420.0_f32;
-    let row_h = 22.0_f32;
-    let pad = 28.0_f32;
-    let title_h = 32.0_f32;
+    let card_w = 420.0 * scale;
+    let row_h = 22.0 * scale;
+    let pad = 28.0 * scale;
+    let title_h = 32.0 * scale;
     let card_h = title_h + pad + entries.len() as f32 * row_h + pad;
+    let radius = 10.0 * scale;
+    let key_col_w = 160.0 * scale;
+    let key_col_gap = 170.0 * scale;
+    let desc_col_w = card_w - 200.0 * scale;
+    let title_fs = 12.0 * scale;
+    let title_lh = 14.0 * scale;
+    let row_fs = 13.0 * scale;
+    let title_y_adj = 6.0 * scale;
 
     let cx = (frame.width as f32 - card_w) / 2.0;
     let cy = (frame.height as f32 - card_h) / 2.0;
@@ -492,7 +509,7 @@ impl Painter {
       cy as i32,
       card_w as u32,
       card_h as u32,
-      10.0,
+      radius,
       card_bg,
     );
     stroke_rounded_rect_aa(
@@ -501,16 +518,16 @@ impl Painter {
       cy as i32,
       card_w as u32,
       card_h as u32,
-      10.0,
+      radius,
       theme.border,
-      1.0,
+      1.0 * scale,
     );
 
     let title = crate::layout::make_plain_buffer(
       &mut self.fs,
       "KEYBINDS",
-      12.0,
-      14.0,
+      title_fs,
+      title_lh,
       card_w - pad * 2.0,
       crate::text::FONT_SANS,
     );
@@ -520,7 +537,7 @@ impl Painter {
       &mut self.fs,
       &mut self.swash,
       cx + pad,
-      cy + pad - 6.0,
+      cy + pad - title_y_adj,
       theme.muted,
     );
 
@@ -529,17 +546,17 @@ impl Painter {
       let key_buf = crate::layout::make_plain_buffer(
         &mut self.fs,
         key,
-        13.0,
+        row_fs,
         row_h,
-        160.0,
+        key_col_w,
         crate::text::FONT_MONO,
       );
       let desc_buf = crate::layout::make_plain_buffer(
         &mut self.fs,
         desc,
-        13.0,
+        row_fs,
         row_h,
-        card_w - 200.0,
+        desc_col_w,
         crate::text::FONT_SANS,
       );
       draw_buffer(
@@ -556,7 +573,7 @@ impl Painter {
         &desc_buf,
         &mut self.fs,
         &mut self.swash,
-        cx + pad + 170.0,
+        cx + pad + key_col_gap,
         row_y,
         theme.fg,
       );

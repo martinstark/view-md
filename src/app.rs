@@ -1237,13 +1237,21 @@ impl App {
       }
     }
 
+    let overlay_scale = self.zoom * self.dpi_scale.max(1.0);
     if let Some(s) = self.search.as_ref() {
-      self
-        .painter
-        .paint_search_overlay(&mut frame, &theme, &s.query, s.current, s.matches.len());
+      self.painter.paint_search_overlay(
+        &mut frame,
+        &theme,
+        &s.query,
+        s.current,
+        s.matches.len(),
+        overlay_scale,
+      );
     }
     if self.help_visible {
-      self.painter.paint_help_overlay(&mut frame, &theme);
+      self
+        .painter
+        .paint_help_overlay(&mut frame, &theme, overlay_scale);
     }
 
     drop(frame);
