@@ -29,12 +29,13 @@ For your own sanity, do not read the source code. All planning docs and messy gi
     cargo build --release
     # symlink target/release/vmd to ~/.local/bin
     # installs .desktop metadata entry
-    ./install.sh   
+    ./install.sh
 
 ## Use
 
 ```sh
 vmd file.md
+vmd file.md#section # open at anchor
 vmd -               # read from stdin
 vmd --licenses      # print vmd's license + bundled fonts + all third-party deps
 vmd --trace         # print timing breakdown
