@@ -1,3 +1,11 @@
+---
+title: vmd smoke test
+date: 2026-05-04
+tags: [rust, perf, wayland]
+author: ms
+draft: true
+---
+
 # vmd smoke test
 
 A minimal document to verify rendering.[^1]

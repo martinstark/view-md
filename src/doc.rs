@@ -54,6 +54,13 @@ pub enum Block {
     kind: AlertKind,
     blocks: Vec<Block>,
   },
+  /// YAML/TOML frontmatter block extracted from the top of the file.
+  /// `entries` is a flat list of (key, value) pairs in source order;
+  /// lines that don't have a `key: value` shape are stored with an
+  /// empty key so the painter can render them verbatim.
+  Frontmatter {
+    entries: Vec<(String, String)>,
+  },
 }
 
 /// GitHub-flavored markdown alert kinds. Recognized in a blockquote
@@ -125,7 +132,8 @@ pub fn parse(md: &str) -> Doc {
     | Options::ENABLE_FOOTNOTES
     | Options::ENABLE_HEADING_ATTRIBUTES
     | Options::ENABLE_SMART_PUNCTUATION;
-  let parser = Parser::new_ext(md, opts);
+  let (frontmatter, body) = extract_frontmatter(md);
+  let parser = Parser::new_ext(body, opts);
   let mut b = Builder::default();
   for ev in parser {
     b.feed(ev);
@@ -133,7 +141,62 @@ pub fn parse(md: &str) -> Doc {
   let mut blocks = b.finish();
   promote_image_paragraphs(&mut blocks);
   promote_alerts(&mut blocks);
+  if let Some(entries) = frontmatter {
+    if !entries.is_empty() {
+      blocks.insert(0, Block::Frontmatter { entries });
+    }
+  }
   Doc { blocks }
+}
+
+/// If `source` opens with a YAML/TOML-style frontmatter block delimited
+/// by `---` lines, peel it off and parse it into (key, value) pairs.
+/// The body returned is the source from the line after the closing
+/// `---` onward — the markdown parser sees only that. Closing
+/// delimiter must be on its own line for the block to count; if it's
+/// missing, the whole source falls through as plain markdown.
+fn extract_frontmatter(source: &str) -> (Option<Vec<(String, String)>>, &str) {
+  let after_open = if let Some(rest) = source.strip_prefix("---\n") {
+    rest
+  } else if let Some(rest) = source.strip_prefix("---\r\n") {
+    rest
+  } else {
+    return (None, source);
+  };
+  // Search for a line that is exactly `---` (with optional CR), at the
+  // start of a line, terminated by `\n` or end-of-input.
+  let mut search = 0usize;
+  let close = loop {
+    let Some(rel) = after_open[search..].find("\n---") else {
+      return (None, source);
+    };
+    let line_start = search + rel + 1;
+    let after_marker = line_start + 3;
+    let tail = &after_open[after_marker..];
+    if tail.is_empty() || tail.starts_with('\n') {
+      break (line_start, after_marker + tail.starts_with('\n') as usize);
+    }
+    if let Some(rest) = tail.strip_prefix("\r\n") {
+      let _ = rest;
+      break (line_start, after_marker + 2);
+    }
+    if tail.starts_with('\r') && tail.get(1..2) == Some("\n") {
+      break (line_start, after_marker + 2);
+    }
+    search = after_marker;
+  };
+  let (content_end, body_start_in_after) = close;
+  let content = &after_open[..content_end];
+  let body = &after_open[body_start_in_after..];
+  let entries: Vec<(String, String)> = content
+    .lines()
+    .filter(|l| !l.trim().is_empty())
+    .map(|l| match l.split_once(':') {
+      Some((k, v)) => (k.trim().to_string(), v.trim().to_string()),
+      None => (String::new(), l.trim().to_string()),
+    })
+    .collect();
+  (Some(entries), body)
 }
 
 /// Promote a paragraph whose only inline content is a single image to a

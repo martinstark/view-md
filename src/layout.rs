@@ -120,6 +120,15 @@ pub enum LaidKind {
     width: f32,
     height: f32,
   },
+  /// Frontmatter rendered as a muted key/value box at the top of the
+  /// doc. One pre-formatted monospace buffer with column-aligned rows.
+  Frontmatter {
+    buffer: Buffer,
+    bg: SkColor,
+    width: f32,
+    pad_x: f32,
+    pad_y: f32,
+  },
 }
 
 pub struct TableRowLayout {
@@ -448,6 +457,7 @@ fn layout_block(
     Block::Footnotes(defs) => layout_footnotes(defs, w, x, fs, theme, ctx),
     Block::Image { src, alt } => layout_image(src, alt, w, x, ctx),
     Block::Alert { kind, blocks } => layout_alert(*kind, blocks, w, x, fs, theme, ctx),
+    Block::Frontmatter { entries } => layout_frontmatter(entries, w, x, fs, theme, ctx),
   }
 }
 
@@ -480,6 +490,81 @@ fn layout_image(src: &str, alt: &str, w: f32, x: f32, ctx: &Ctx) -> (Vec<LaidBlo
       },
     }],
     display_h,
+  )
+}
+
+/// Lay out a frontmatter block as a muted rounded box. Renders each
+/// entry as a single line of monospace text with the key padded to
+/// the longest key in the block plus two spaces, then the value.
+/// Lines without a key (verbatim continuation lines) print indented
+/// to align with the value column. Single buffer, single color —
+/// keeps the renderer simple and avoids inventing inline-styling for
+/// what's intentionally low-emphasis content.
+fn layout_frontmatter(
+  entries: &[(String, String)],
+  w: f32,
+  x: f32,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  _ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+  let s = _ctx.scale;
+  let pad_x = CODE_PAD_X * s;
+  let pad_y = CODE_PAD_Y * s;
+  let inner_w = (w - pad_x * 2.0).max(40.0);
+
+  let key_col: usize = entries
+    .iter()
+    .filter(|(k, _)| !k.is_empty())
+    .map(|(k, _)| k.chars().count())
+    .max()
+    .unwrap_or(0);
+  let mut lines = String::new();
+  for (i, (k, v)) in entries.iter().enumerate() {
+    if i > 0 {
+      lines.push('\n');
+    }
+    if k.is_empty() {
+      // Continuation / non-kv line: indent to value column.
+      for _ in 0..(key_col + 2) {
+        lines.push(' ');
+      }
+      lines.push_str(v);
+    } else {
+      lines.push_str(k);
+      let pad = (key_col - k.chars().count()) + 2;
+      for _ in 0..pad {
+        lines.push(' ');
+      }
+      lines.push_str(v);
+    }
+  }
+
+  let buf = make_plain_buffer(
+    fs,
+    &lines,
+    CODE_FS * s,
+    CODE_FS * s * CODE_LH_RATIO,
+    inner_w,
+    FONT_MONO,
+  );
+  let buf_h = buffer_height(&buf);
+  let total_h = buf_h + pad_y * 2.0;
+
+  (
+    vec![LaidBlock {
+      y: 0.0,
+      h: total_h,
+      x,
+      kind: LaidKind::Frontmatter {
+        buffer: buf,
+        bg: theme.code_bg,
+        width: w,
+        pad_x,
+        pad_y,
+      },
+    }],
+    total_h,
   )
 }
 
