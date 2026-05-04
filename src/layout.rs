@@ -29,6 +29,10 @@ pub const QUOTE_INDENT: f32 = 16.0;
 pub const QUOTE_BAR_W: f32 = 3.0;
 pub const CALLOUT_TITLE_GAP: f32 = BLOCK_GAP * 0.5;
 pub const CALLOUT_VPAD: f32 = 4.0;
+/// Footnotes render at ~87.5% of body size (14 px at 1x zoom) and pull
+/// every internal gap/indent through the same `ctx.scale` path, so the
+/// section stays proportional at any zoom or DPI.
+pub const FOOTNOTE_SCALE: f32 = 0.875;
 pub const TASK_BOX: f32 = 14.0;
 pub const CODE_PAD_X: f32 = 14.0;
 pub const CODE_PAD_Y: f32 = 12.0;
@@ -351,6 +355,7 @@ fn build_footnote_jumps(blocks: &[LaidBlock]) -> HashMap<String, FootnoteJump> {
   jumps
 }
 
+#[derive(Clone)]
 struct Ctx {
   full_highlight: bool,
   scale: f32,
@@ -580,17 +585,25 @@ fn layout_footnotes(
   theme: &Theme,
   ctx: &Ctx,
 ) -> (Vec<LaidBlock>, f32) {
+  // The whole section runs through a sub-context at FOOTNOTE_SCALE, so
+  // every interior font size, gap, indent, and code padding shrinks
+  // together — and still tracks the outer `ctx.scale` for zoom/DPI.
+  let s = ctx.scale * FOOTNOTE_SCALE;
+  let foot_ctx = Ctx {
+    full_highlight: ctx.full_highlight,
+    scale: s,
+    images: ctx.images.clone(),
+    base_dir: ctx.base_dir.clone(),
+  };
+
   let mut all: Vec<LaidBlock> = Vec::new();
   let mut total = 0.0_f32;
 
-  let header = make_plain_buffer(
-    fs,
-    "Footnotes",
-    heading_size(3),
-    heading_size(3) * 1.25,
-    w,
-    FONT_SANS,
-  );
+  // Section header: smaller than a regular h3 so the section reads as a
+  // footer rather than a peer of body sections.
+  let header_fs = BODY_FS * s;
+  let header_lh = header_fs * BODY_LH_RATIO;
+  let header = make_plain_buffer(fs, "Footnotes", header_fs, header_lh, w, FONT_SANS);
   let hh = buffer_height(&header);
   all.push(LaidBlock {
     y: 0.0,
@@ -598,58 +611,56 @@ fn layout_footnotes(
     x,
     kind: LaidKind::Text {
       buffer: header,
-      color: theme.heading,
+      color: theme.muted,
       underlines: Vec::new(),
       strikes: Vec::new(),
       code_runs: Vec::new(),
       links: Vec::new(),
     },
   });
-  total += hh + BLOCK_GAP;
+  total += hh + BLOCK_GAP * s * 0.5;
   all.push(LaidBlock {
-    y: total - BLOCK_GAP * 0.5,
+    y: total,
     h: 1.0,
     x,
     kind: LaidKind::Rule,
   });
+  total += BLOCK_GAP * s * 0.75;
 
   // Footnote labels can be numeric ("1") or word-form ("edge"). Word
-  // labels would wrap mid-word inside a fixed 32px column. Compute a
-  // shared column width sized to the longest label, capped so very long
-  // labels don't eat the body's width.
+  // labels would wrap mid-word inside a fixed column. Compute a shared
+  // column width sized to the longest label, capped so very long labels
+  // don't eat the body's width.
   const FOOTNOTE_LABEL_PAD: f32 = 8.0;
   const FOOTNOTE_LABEL_CAP: f32 = 50.0;
-  // Match body metrics so label baselines align with the body's first
-  // line of text.
-  let label_fs = BODY_FS * ctx.scale;
+  let label_fs = BODY_FS * s;
   let label_lh = label_fs * BODY_LH_RATIO;
-  let label_pad = FOOTNOTE_LABEL_PAD * ctx.scale;
-  let label_cap = FOOTNOTE_LABEL_CAP * ctx.scale;
+  let label_pad = FOOTNOTE_LABEL_PAD * s;
+  let label_cap = FOOTNOTE_LABEL_CAP * s;
   let label_max_w = (label_cap - label_pad).max(8.0);
 
-  // Each label renders as `"<label>. ↩"`. The whole buffer is wired to
-  // LinkTarget::FootnoteBack(label) so any click in the cell scrolls
-  // back to the first reference; the arrow makes the affordance visible.
-  let label_texts: Vec<String> = defs.iter().map(|d| format!("{}. ↩", d.label)).collect();
-  let label_bufs: Vec<Buffer> = label_texts
+  // Each label is two styled runs: muted "<n>. " + link-colored "↩".
+  // The whole buffer is one click target so a forgiving hit area takes
+  // you back to the first reference; the colored arrow makes it visible.
+  let label_bufs: Vec<(Buffer, usize)> = defs
     .iter()
-    .map(|t| make_plain_buffer(fs, t, label_fs, label_lh, label_max_w, FONT_SANS))
+    .map(|def| build_footnote_label(fs, &def.label, label_fs, label_lh, label_max_w, theme))
     .collect();
   let measured = label_bufs
     .iter()
-    .flat_map(|b| b.layout_runs())
+    .flat_map(|(b, _)| b.layout_runs())
     .map(|r| r.line_w)
     .fold(0.0_f32, f32::max);
   let col_w = (measured + label_pad).min(label_cap);
 
-  for (i, (def, label_buf)) in defs.iter().zip(label_bufs.into_iter()).enumerate() {
+  for (i, (def, (label_buf, total_bytes))) in defs.iter().zip(label_bufs.into_iter()).enumerate() {
     if i > 0 {
-      total += LIST_ITEM_GAP * 2.0;
+      total += LIST_ITEM_GAP * 2.0 * s;
     }
     let lh = buffer_height(&label_buf);
     let label_links = vec![LinkRange {
       byte_start: 0,
-      byte_end: label_texts[i].len(),
+      byte_end: total_bytes,
       target: LinkTarget::FootnoteBack(def.label.clone()),
     }];
     all.push(LaidBlock {
@@ -673,19 +684,51 @@ fn layout_footnotes(
       body_x,
       fs,
       theme,
-      ctx,
-      BLOCK_GAP * ctx.scale,
+      &foot_ctx,
+      BLOCK_GAP * s,
     );
     for lb in laid.iter_mut() {
       lb.y += total;
     }
     all.extend(laid);
-    // Row height = max(label_height, body_height) so a wrapped label
-    // doesn't overlap the next row.
+    // Row height = max(label, body) so wrapped content can't overlap
+    // the next row.
     total += dy.max(lh);
   }
 
   (all, total)
+}
+
+/// Build a footnote-definition label as a 2-run rich-text buffer:
+/// muted "<n>. " followed by a link-colored "↩". Returns the buffer
+/// and total byte length so callers can size the LinkRange.
+fn build_footnote_label(
+  fs: &mut FontSystem,
+  label: &str,
+  font_size: f32,
+  line_height: f32,
+  width: f32,
+  theme: &Theme,
+) -> (Buffer, usize) {
+  const ARROW: &str = "↩";
+  let prefix = format!("{}. ", label);
+  let total_bytes = prefix.len() + ARROW.len();
+
+  let mut buf = Buffer::new(fs, Metrics::new(font_size, line_height));
+  buf.set_size(Some(width), None);
+  let base = Attrs::new()
+    .family(Family::Name(FONT_SANS))
+    .font_features(sans_features())
+    .color(theme.muted);
+  let arrow_attrs = base.clone().color(theme.link);
+  buf.set_rich_text(
+    [(prefix.as_str(), base.clone()), (ARROW, arrow_attrs)].into_iter(),
+    &base,
+    Shaping::Advanced,
+    None,
+  );
+  buf.shape_until_scroll(fs, false);
+  (buf, total_bytes)
 }
 
 fn layout_code_block(

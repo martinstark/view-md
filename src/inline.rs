@@ -102,7 +102,13 @@ fn walk(inlines: &[Inline], state: StyleState, theme: &Theme, out: &mut StyledRu
         let mut s2 = state;
         s2.color = Some(theme.link);
         s2.link = Some(idx);
-        push(out, format!("[{}]", label), s2);
+        // cosmic-text's simple-ASCII fast path shapes whole words with the
+        // run's start attrs, so per-span OpenType `sups` won't substitute
+        // the digit/letter mid-word. Pre-map to Unicode superscript
+        // codepoints (Inter ships glyphs for all digits + all lowercase
+        // letters except `q`); they render as smaller raised glyphs at
+        // body size, no shaper feature required.
+        push(out, to_superscript(label), s2);
       }
       Inline::SoftBreak => push(out, " ".into(), state),
       Inline::HardBreak => push(out, "\n".into(), state),
@@ -124,6 +130,56 @@ fn push(out: &mut StyledRuns, text: String, s: StyleState) {
     color: s.color,
     link: s.link,
   });
+}
+
+fn to_superscript(s: &str) -> String {
+  s.chars()
+    .map(|c| match c {
+      '0' => '\u{2070}',
+      '1' => '\u{00B9}',
+      '2' => '\u{00B2}',
+      '3' => '\u{00B3}',
+      '4' => '\u{2074}',
+      '5' => '\u{2075}',
+      '6' => '\u{2076}',
+      '7' => '\u{2077}',
+      '8' => '\u{2078}',
+      '9' => '\u{2079}',
+      'a' => '\u{1D43}',
+      'b' => '\u{1D47}',
+      'c' => '\u{1D9C}',
+      'd' => '\u{1D48}',
+      'e' => '\u{1D49}',
+      'f' => '\u{1DA0}',
+      'g' => '\u{1D4D}',
+      'h' => '\u{02B0}',
+      'i' => '\u{2071}',
+      'j' => '\u{02B2}',
+      'k' => '\u{1D4F}',
+      'l' => '\u{02E1}',
+      'm' => '\u{1D50}',
+      'n' => '\u{207F}',
+      'o' => '\u{1D52}',
+      'p' => '\u{1D56}',
+      'r' => '\u{02B3}',
+      's' => '\u{02E2}',
+      't' => '\u{1D57}',
+      'u' => '\u{1D58}',
+      'v' => '\u{1D5B}',
+      'w' => '\u{02B7}',
+      'x' => '\u{02E3}',
+      'y' => '\u{02B8}',
+      'z' => '\u{1DBB}',
+      '+' => '\u{207A}',
+      '-' => '\u{207B}',
+      '=' => '\u{207C}',
+      '(' => '\u{207D}',
+      ')' => '\u{207E}',
+      // 'q' has no Unicode superscript; uppercase letters and other
+      // chars fall through unchanged. Rare for footnote labels.
+      c => c,
+    })
+    .collect()
 }
 
 pub fn build_buffer(
