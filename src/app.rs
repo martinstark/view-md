@@ -39,6 +39,9 @@ const BODY_LH_APPROX: f32 = 1.55;
 
 pub const ZOOM_MIN: f32 = 0.5;
 pub const ZOOM_MAX: f32 = 3.0;
+/// How long the post-action acknowledgement badge ("Opened" /
+/// "Copied") stays on screen before auto-dismissing.
+pub const TOAST_DURATION_MS: u64 = 1000;
 pub const ZOOM_STEP: f32 = 0.1;
 pub const SCROLL_LINE_PX: f32 = 40.0;
 pub const HALF_PAGE_FRAC: f32 = 0.5;
@@ -132,6 +135,86 @@ pub struct App {
   /// `None` after Esc dismisses it. Driven by `/` to open and Enter
   /// to advance to the next match.
   pub search: Option<SearchState>,
+  /// Active vimium-style hint overlay. `Some` while open, freezing
+  /// scroll/click and capturing the alphabet keys; `None` otherwise.
+  /// Built lazily on `f`-press — none of the per-target geometry or
+  /// label allocation runs unless the user explicitly opens it.
+  pub hint: Option<HintState>,
+  /// Brief acknowledgement badge ("Opened" / "Copied") shown after
+  /// firing a hint action or yanking via `y`. Auto-clears via the
+  /// existing `WaitUntil` deadline plumbing once `expires_at` is
+  /// reached. Position lives in doc-space — same convention as
+  /// `HintTarget` — so the toast scrolls with the doc during its
+  /// brief lifetime.
+  pub toast: Option<Toast>,
+}
+
+#[derive(Clone)]
+pub struct Toast {
+  pub kind: ToastKind,
+  pub badge_x: f32,
+  pub badge_y: f32,
+  pub align_right: bool,
+  pub expires_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ToastKind {
+  /// Code text was placed on the clipboard.
+  Copied,
+  /// External URL was handed off to the system browser, or an
+  /// in-doc anchor was scrolled to.
+  Opened,
+}
+
+impl ToastKind {
+  pub fn text(self) -> &'static str {
+    match self {
+      ToastKind::Copied => "Copied",
+      ToastKind::Opened => "Opened",
+    }
+  }
+}
+
+/// Vimium-style hint mode state. Built once when `f` is pressed, then
+/// frozen against scroll/resize until dismissed. All target positions
+/// are stored in document-space (relative to `scroll_y = 0`) so the
+/// painter just subtracts the current `scroll_y` at draw time — though
+/// in practice we also disable scroll while the overlay is open.
+pub struct HintState {
+  pub targets: Vec<HintTarget>,
+  /// Same length as `targets`. Each label is uppercase ASCII, 1–2
+  /// chars. No label is a prefix of another (algorithm guarantee).
+  pub labels: Vec<String>,
+  /// Uppercase prefix typed so far. Empty on open. Each char append
+  /// either fires a target (exact match) or narrows the visible
+  /// badges; a non-prefix char aborts.
+  pub typed: String,
+}
+
+#[derive(Clone)]
+pub struct HintTarget {
+  pub action: HintAction,
+  /// Document-space x anchor. Interpretation depends on `align_right`:
+  /// when true, the badge's *right edge* lines up with this x (badge
+  /// sits to the LEFT of the element so the element stays visible);
+  /// when false, the badge's *left edge* lines up with this x (badge
+  /// sits inside the element's top-left corner — used for code blocks
+  /// where the corner is padding, not text).
+  pub badge_x: f32,
+  pub badge_y: f32,
+  pub align_right: bool,
+}
+
+#[derive(Clone)]
+pub enum HintAction {
+  /// External URL / footnote ref / footnote back-arrow — dispatched
+  /// through the existing `App::follow_link`, same path as a click.
+  FollowLink(crate::layout::LinkTarget),
+  /// Code block or inline code span: copy this text to the clipboard.
+  /// Owned so the action survives a `--watch` reload that might
+  /// invalidate `laid`.
+  CopyCode(String),
 }
 
 /// In-doc search state. Maintains the current query, all match
@@ -247,22 +330,26 @@ fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
 impl ApplicationHandler<AppEvent> for App {
   fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
     // `WaitUntil` woke us up: an animation deadline, an empty-reload
-    // recheck, or both. Run the empty-recheck (which may apply a
-    // deferred reload) and request a redraw — the redraw is harmless
-    // when only the empty-recheck fired with no actual change.
+    // recheck, a toast expiry, or any combination. Run all the
+    // deadline-driven checks and request a redraw — extra redraws
+    // are harmless when only one of the deadlines actually fired.
     if matches!(cause, StartCause::ResumeTimeReached { .. }) {
       self.check_empty_deadline();
+      self.check_toast_deadline();
       self.request_redraw();
     }
   }
 
   fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-    let earliest = match (self.anim_next_deadline, self.empty_reload_deadline) {
-      (Some(a), Some(e)) => Some(a.min(e)),
-      (Some(a), None) => Some(a),
-      (None, Some(e)) => Some(e),
-      (None, None) => None,
-    };
+    let toast_deadline = self.toast.as_ref().map(|t| t.expires_at);
+    let earliest = [
+      self.anim_next_deadline,
+      self.empty_reload_deadline,
+      toast_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     match earliest {
       Some(d) => event_loop.set_control_flow(ControlFlow::WaitUntil(d)),
       None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -395,6 +482,11 @@ impl ApplicationHandler<AppEvent> for App {
       WindowEvent::CloseRequested => event_loop.exit(),
       WindowEvent::Resized(size) => {
         if let Some(surface) = self.surface.as_mut() {
+          // Resize invalidates every captured hint position; close
+          // the overlay before relayout so paint won't draw stale
+          // badges on the new surface.
+          self.hint = None;
+          self.toast = None;
           let (w, h) = (size.width.max(1), size.height.max(1));
           let _ = surface.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
           self.surface_size = (w, h);
@@ -407,6 +499,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+        self.hint = None;
+        self.toast = None;
         let anchor = self.capture_scroll_anchor();
         self.dpi_scale = scale_factor as f32;
         self.relayout(self.current_surface_width());
@@ -416,6 +510,13 @@ impl ApplicationHandler<AppEvent> for App {
         self.request_redraw();
       }
       WindowEvent::MouseWheel { delta, .. } => {
+        // Frozen while hints are open: swallow the wheel without
+        // closing — closing on every wheel tick would make hint mode
+        // brittle on touchpads, and hint targets are anchored to the
+        // captured viewport anyway.
+        if self.hint.is_some() {
+          return;
+        }
         let dy = match delta {
           MouseScrollDelta::LineDelta(_, y) => -y * WHEEL_LINE_SCALE,
           MouseScrollDelta::PixelDelta(p) => -p.y as f32 * WHEEL_PIXEL_SCALE,
@@ -424,6 +525,12 @@ impl ApplicationHandler<AppEvent> for App {
         self.request_redraw();
       }
       WindowEvent::CursorMoved { position, .. } => {
+        if self.hint.is_some() {
+          // Don't update drag-selection while the overlay is open;
+          // still record the cursor so post-close behavior is correct.
+          self.cursor = position;
+          return;
+        }
         self.cursor = position;
         if self.dragging {
           if let Some(hit) = self.hit_test(position.x as f32, position.y as f32) {
@@ -443,6 +550,14 @@ impl ApplicationHandler<AppEvent> for App {
         ..
       } => match state {
         ElementState::Pressed => {
+          // A click anywhere closes the hint overlay; the click
+          // itself does not also fire a hint or follow a link — the
+          // user gets normal click semantics on the *next* press.
+          if self.hint.is_some() {
+            self.hint = None;
+            self.request_redraw();
+            return;
+          }
           // `dragging` is set on every press regardless of hit_test —
           // it tracks "mouse is down, this may be a click or a drag",
           // not "we hit selectable text". That separation matters for
@@ -522,6 +637,15 @@ impl App {
       self.handle_search_key(&key);
       return;
     }
+    // Hint mode: swallows all input except the alphabet, Esc,
+    // Backspace, and the two keys that cancel-and-open another modal
+    // (`?` for help, `/` for search). See `handle_hint_key` for the
+    // exact FSM. Lives above the help-visible check so a stray `?`
+    // typed into hint input doesn't first close the help overlay.
+    if self.hint.is_some() {
+      self.handle_hint_key(&key);
+      return;
+    }
     if self.help_visible {
       match key.as_ref() {
         Key::Character("?") | Key::Named(NamedKey::Escape) | Key::Character("q") => {
@@ -572,10 +696,7 @@ impl App {
         self.scroll_by(-self.viewport_h() * HALF_PAGE_FRAC);
         self.request_redraw();
       }
-      Key::Character("f") => {
-        self.scroll_by(self.viewport_h() * FULL_PAGE_FRAC);
-        self.request_redraw();
-      }
+      Key::Character("f") => self.open_hints(),
       Key::Character("b") => {
         self.scroll_by(-self.viewport_h() * FULL_PAGE_FRAC);
         self.request_redraw();
@@ -836,6 +957,10 @@ impl App {
     crate::trace!("reload_from_disk bytes={}", source.len());
     self.doc = crate::doc::parse(&source);
     self.selection = None;
+    // Reload reflows the doc; captured hint badge positions are
+    // referenced to the old layout, so close before we relayout.
+    self.hint = None;
+    self.toast = None;
     // Refresh image dims for any new srcs and synchronously decode the
     // new ones. Existing entries are left in place so already-loaded
     // pixels stay cached. Reload happens in response to a user save,
@@ -1074,6 +1199,179 @@ impl App {
       (block.y - HEADING_OFFSET_PX * self.dpi_scale.max(1.0)).clamp(0.0, max);
   }
 
+  /// Build the vimium-style hint set against the *currently visible*
+  /// portion of `laid`. Lazy entry point: nothing in the hint pipeline
+  /// runs until the user presses `f`, so the cold-launch hot path
+  /// stays untouched. Returns without opening if no targets pass the
+  /// visibility filter.
+  fn open_hints(&mut self) {
+    let Some(laid) = self.laid.as_ref() else {
+      return;
+    };
+    let viewport_top = self.scroll_y;
+    let viewport_bottom = viewport_top + self.viewport_h();
+    let scale = self.zoom * self.dpi_scale.max(1.0);
+    let margin = HINT_MARGIN_PX * scale;
+
+    let mut targets: Vec<HintTarget> = Vec::new();
+    for block in &laid.blocks {
+      // Block must at least overlap the viewport.
+      if block.y + block.h <= viewport_top || block.y >= viewport_bottom {
+        continue;
+      }
+      collect_block_hints(
+        block,
+        viewport_top,
+        viewport_bottom,
+        margin,
+        &mut targets,
+      );
+    }
+
+    if targets.is_empty() {
+      return;
+    }
+
+    // Final on-surface clamp happens in `paint_hints`, where the
+    // measured badge width is known.
+    let labels = build_hint_labels(targets.len(), HINT_ALPHABET);
+    debug_assert_eq!(labels.len(), targets.len());
+
+    self.hint = Some(HintState {
+      targets,
+      labels,
+      typed: String::new(),
+    });
+    crate::trace!("hints_open n={}", self.hint.as_ref().unwrap().targets.len());
+    self.request_redraw();
+  }
+
+  /// FSM for keys delivered while the hint overlay is open. See the
+  /// top-level guard in `handle_key`.
+  fn handle_hint_key(&mut self, key: &Key) {
+    // Modifier-bearing keystrokes (Ctrl/Alt + char) must not be
+    // interpreted as label input — `Ctrl+C` arrives as a
+    // `Character("c")` and would otherwise narrow or fire.
+    let mods = self.modifiers.state();
+    if mods.control_key() || mods.alt_key() {
+      return;
+    }
+    match key.as_ref() {
+      Key::Named(NamedKey::Escape) => {
+        self.hint = None;
+        self.request_redraw();
+      }
+      Key::Named(NamedKey::Backspace) => {
+        if let Some(state) = self.hint.as_mut() {
+          if state.typed.pop().is_some() {
+            self.request_redraw();
+          }
+        }
+      }
+      // `?` and `/` cancel hint mode and immediately open the
+      // corresponding overlay — explicit shortcut, not aborted input.
+      Key::Character("?") => {
+        self.hint = None;
+        self.help_visible = true;
+        self.request_redraw();
+      }
+      Key::Character("/") => {
+        self.hint = None;
+        self.search = Some(SearchState {
+          query: String::new(),
+          matches: Vec::new(),
+          current: None,
+        });
+        self.request_redraw();
+      }
+      Key::Character(s) => {
+        // Accept only the first ASCII char of whatever the layout
+        // delivered (`Character` is usually one char, but be safe).
+        let Some(c) = s.chars().next() else { return };
+        let upper = c.to_ascii_uppercase();
+        if !HINT_ALPHABET
+          .chars()
+          .any(|x| x.to_ascii_uppercase() == upper)
+        {
+          // Not in the alphabet: abort the overlay. Better to give a
+          // clean reset than leave the user stuck typing dead keys.
+          self.hint = None;
+          self.request_redraw();
+          return;
+        }
+        self.append_hint_char(upper);
+      }
+      _ => {}
+    }
+  }
+
+  fn append_hint_char(&mut self, upper: char) {
+    let Some(state) = self.hint.as_mut() else {
+      return;
+    };
+    state.typed.push(upper);
+    let typed = state.typed.clone();
+
+    // Exact match → fire. Vimium-style: any chord prefix that exactly
+    // equals a label triggers that label without waiting for more input.
+    if let Some(idx) = state.labels.iter().position(|l| l == &typed) {
+      let target = state.targets[idx].clone();
+      self.hint = None;
+      let toast_kind = match &target.action {
+        HintAction::FollowLink(_) => ToastKind::Opened,
+        HintAction::CopyCode(_) => ToastKind::Copied,
+      };
+      self.fire_hint_action(target.action);
+      self.show_toast(toast_kind, target.badge_x, target.badge_y, target.align_right);
+      return;
+    }
+
+    // Still narrowing → keep overlay alive iff at least one label
+    // still has `typed` as a prefix.
+    let any_prefix = state.labels.iter().any(|l| l.starts_with(&typed));
+    if !any_prefix {
+      self.hint = None;
+    }
+    self.request_redraw();
+  }
+
+  fn fire_hint_action(&mut self, action: HintAction) {
+    match action {
+      HintAction::FollowLink(target) => self.follow_link(target),
+      HintAction::CopyCode(code) => {
+        crate::trace!("hint_copy: {} chars", code.len());
+        self.set_clipboard(code);
+      }
+    }
+  }
+
+  /// Show a brief acknowledgement badge at `(x, y)` (doc-space) for
+  /// `TOAST_DURATION_MS`. Replaces any prior toast — only one is
+  /// visible at a time. Schedules a redraw so the badge appears
+  /// immediately, then `about_to_wait` picks up `expires_at` for the
+  /// auto-dismiss wake-up.
+  fn show_toast(&mut self, kind: ToastKind, x: f32, y: f32, align_right: bool) {
+    self.toast = Some(Toast {
+      kind,
+      badge_x: x,
+      badge_y: y,
+      align_right,
+      expires_at: Instant::now() + Duration::from_millis(TOAST_DURATION_MS),
+    });
+    self.request_redraw();
+  }
+
+  /// Called from `new_events` when a `WaitUntil` deadline fires. If
+  /// the toast has expired, drop it; the follow-up redraw clears
+  /// the badge from the surface.
+  fn check_toast_deadline(&mut self) {
+    if let Some(t) = self.toast.as_ref() {
+      if Instant::now() >= t.expires_at {
+        self.toast = None;
+      }
+    }
+  }
+
   fn current_surface_width(&self) -> f32 {
     let w = self.surface_size.0;
     if w == 0 { 920.0 } else { w as f32 }
@@ -1090,7 +1388,11 @@ impl App {
     let viewport_top = self.scroll_y;
     let viewport_bottom = self.scroll_y + self.viewport_h();
     let viewport_center = (viewport_top + viewport_bottom) / 2.0;
-    let mut best: Option<(f32, String)> = None;
+    let scale = self.zoom * self.dpi_scale.max(1.0);
+    let margin = HINT_MARGIN_PX * scale;
+    // (dist_from_center, source, badge_x, badge_y) — badge anchor
+    // matches what `f`+code-block hint mode would have placed there.
+    let mut best: Option<(f32, String, f32, f32)> = None;
     if let Some(laid) = self.laid.as_ref() {
       for block in &laid.blocks {
         if let LaidKind::CodeBlock { source, .. } = &block.kind {
@@ -1099,15 +1401,18 @@ impl App {
           }
           let center = block.y + block.h / 2.0;
           let dist = (center - viewport_center).abs();
-          if best.as_ref().map_or(true, |(d, _)| dist < *d) {
-            best = Some((dist, source.clone()));
+          if best.as_ref().map_or(true, |(d, ..)| dist < *d) {
+            let badge_y = block.y.max(viewport_top + margin);
+            let badge_x = block.x + margin;
+            best = Some((dist, source.clone(), badge_x, badge_y));
           }
         }
       }
     }
-    if let Some((_, src)) = best {
+    if let Some((_, src, bx, by)) = best {
       crate::trace!("yank_visible_code: {} chars", src.len());
       self.set_clipboard(src);
+      self.show_toast(ToastKind::Copied, bx, by, false);
     } else {
       crate::trace!("yank_visible_code: no code block in viewport");
     }
@@ -1364,6 +1669,26 @@ impl App {
     }
 
     let overlay_scale = self.zoom * self.dpi_scale.max(1.0);
+    if let Some(hint) = self.hint.as_ref() {
+      self
+        .painter
+        .paint_hints(&mut frame, &theme, hint, self.scroll_y, overlay_scale);
+    }
+    // Toast is checked-and-cleared inline so an expired one doesn't
+    // ghost-paint past its deadline (a stray redraw can fire after
+    // expiry but before `new_events` runs `check_toast_deadline`).
+    let toast_to_paint = match self.toast.as_ref() {
+      Some(t) if Instant::now() < t.expires_at => Some(t.clone()),
+      _ => {
+        self.toast = None;
+        None
+      }
+    };
+    if let Some(t) = toast_to_paint {
+      self
+        .painter
+        .paint_toast(&mut frame, &theme, &t, self.scroll_y, overlay_scale);
+    }
     if let Some(s) = self.search.as_ref() {
       self.painter.paint_search_overlay(
         &mut frame,
@@ -1616,4 +1941,376 @@ pub fn slugify(s: &str) -> String {
     out.pop();
   }
   out
+}
+
+/// Priority-ordered alphabet for hint labels. Home-row first, then
+/// near-row, then less-ergonomic keys last. The "leader" letters used
+/// for chord prefixes are pulled from the *end*, so good keys stay
+/// single-letter. ASCII uppercase is used for matching; layout
+/// delivers lowercase characters via `Key::Character`, but we
+/// uppercase before storing to make chord display deterministic.
+pub const HINT_ALPHABET: &str = "FJDKSLAGHRUEIWONCMPVBTZXQY";
+
+/// Inset for badge clamping: keeps badges from butting against the
+/// surface edges. Multiplied by `zoom × dpi_scale` at use sites.
+pub const HINT_MARGIN_PX: f32 = 4.0;
+
+/// Vimium-style label generator. Produces `n` unique uppercase ASCII
+/// labels, no label being a prefix of any other:
+///
+/// - If `n <= K` (`K = alphabet.len()`): single-letter labels from the
+///   *front* of the alphabet (best ergonomics first).
+/// - Otherwise: pick `s` single-letter labels and `L = K - s` chord
+///   leaders such that `s + L*K >= n`, maximizing `s` (more
+///   single-letter labels = fewer keystrokes). Single-letter labels
+///   come from the front; chord leaders from the back; chord suffixes
+///   walk the full alphabet.
+///
+/// Closed form: `s = max(0, K*K - n) / (K - 1)` with the constraint
+/// that `s + (K - s) * K >= n`. Returns labels in document order, i.e.
+/// the same order as the input target sequence — caller assigns by
+/// position.
+pub fn build_hint_labels(n: usize, alphabet: &str) -> Vec<String> {
+  let chars: Vec<char> = alphabet.chars().collect();
+  let k = chars.len();
+  if n == 0 || k == 0 {
+    return Vec::new();
+  }
+  if n <= k {
+    return chars.iter().take(n).map(|c| c.to_string()).collect();
+  }
+  // Cap at total chord capacity (k * k). Beyond that we'd need 3-char
+  // labels; skip — visible-targets count never realistically exceeds
+  // ~50 even on dense pages.
+  let cap = k * k;
+  let n = n.min(cap);
+
+  // Maximize singles s subject to s + (k - s) * k >= n, 0 <= s <= k.
+  // Equivalent: s * (1 - k) >= n - k*k → s <= (k*k - n) / (k - 1).
+  let s = if n >= cap {
+    0
+  } else {
+    ((cap - n) / (k - 1)).min(k)
+  };
+  let l = k - s;
+  let mut out: Vec<String> = Vec::with_capacity(n);
+  for c in chars.iter().take(s) {
+    out.push(c.to_string());
+  }
+  let need = n - s;
+  let mut produced = 0usize;
+  'outer: for leader in chars.iter().skip(s).take(l) {
+    for suffix in chars.iter() {
+      let mut s2 = String::with_capacity(2);
+      s2.push(*leader);
+      s2.push(*suffix);
+      out.push(s2);
+      produced += 1;
+      if produced == need {
+        break 'outer;
+      }
+    }
+  }
+  out
+}
+
+/// Walk one laid block, push every interactive target whose visibility
+/// rule passes. Pure function (no `&App` dependency) so the hint pipe
+/// can be reasoned about independently of the rest of the App state.
+fn collect_block_hints(
+  block: &crate::layout::LaidBlock,
+  viewport_top: f32,
+  viewport_bottom: f32,
+  margin: f32,
+  out: &mut Vec<HintTarget>,
+) {
+  use crate::layout::LaidKind;
+  match &block.kind {
+    LaidKind::Text {
+      buffer,
+      links,
+      code_runs,
+      ..
+    } => {
+      for link in links {
+        if let Some((bx, by)) =
+          first_visible_run_anchor(buffer, block.x, block.y, link.byte_start, link.byte_end, viewport_top, viewport_bottom)
+        {
+          out.push(HintTarget {
+            action: HintAction::FollowLink(link.target.clone()),
+            badge_x: bx,
+            badge_y: by,
+            align_right: true,
+          });
+        }
+      }
+      for c in code_runs {
+        if let Some((bx, by)) =
+          first_visible_run_anchor(buffer, block.x, block.y, c.byte_start, c.byte_end, viewport_top, viewport_bottom)
+        {
+          let snippet = extract_buffer_substring(buffer, c.byte_start, c.byte_end);
+          if snippet.is_empty() {
+            continue;
+          }
+          out.push(HintTarget {
+            action: HintAction::CopyCode(snippet),
+            badge_x: bx,
+            badge_y: by,
+            align_right: true,
+          });
+        }
+      }
+    }
+    LaidKind::CodeBlock {
+      source,
+      buffer,
+      pad_y,
+      ..
+    } => {
+      // Eligible if EITHER (a) ≥70 % of the block is visible — fast
+      // path that also forgives subpixel rounding at the edges — OR
+      // (b) at least one full code line is in view. Branch (b) is
+      // what makes very tall code blocks (taller than the viewport,
+      // so (a) can never trigger) still hintable. Same "≥1 full
+      // line" rule the inline-link path uses, so the two stay
+      // consistent.
+      let top = block.y.max(viewport_top);
+      let bot = (block.y + block.h).min(viewport_bottom);
+      let visible = (bot - top).max(0.0);
+      let hits_70 = block.h > 0.0 && visible / block.h >= 0.70;
+      let buf_origin_y = block.y + *pad_y;
+      let hits_line = hits_70
+        || any_full_line_visible(buffer, buf_origin_y, viewport_top, viewport_bottom);
+      if !hits_line {
+        return;
+      }
+      // Anchor: top-left of block, clamped to viewport-top + margin
+      // when the block extends above the viewport. The badge sits in
+      // the code-block's left padding gutter (no text there), so
+      // left-aligning to `block.x + margin` is fine — no overlap.
+      let badge_y = block.y.max(viewport_top + margin);
+      let badge_x = block.x + margin;
+      out.push(HintTarget {
+        action: HintAction::CopyCode(source.clone()),
+        badge_x,
+        badge_y,
+        align_right: false,
+      });
+    }
+    LaidKind::Table { rows, .. } => {
+      for row in rows {
+        for cell in &row.cells {
+          // Mirror paint_table_cell's adaptive padding so badge x/y
+          // line up with the rendered cell text.
+          let pad_x = (cell.w * 0.04).clamp(6.0, 24.0);
+          let pad_y = (pad_x * 0.7).max(6.0);
+          let cell_origin_x = block.x + cell.x + pad_x;
+          let cell_origin_y = block.y + row.y_top + pad_y;
+          for link in &cell.links {
+            if let Some((bx, by)) = first_visible_run_anchor(
+              &cell.buffer,
+              cell_origin_x,
+              cell_origin_y,
+              link.byte_start,
+              link.byte_end,
+              viewport_top,
+              viewport_bottom,
+            ) {
+              out.push(HintTarget {
+                action: HintAction::FollowLink(link.target.clone()),
+                badge_x: bx,
+                badge_y: by,
+                align_right: true,
+              });
+            }
+          }
+          for c in &cell.code_runs {
+            if let Some((bx, by)) = first_visible_run_anchor(
+              &cell.buffer,
+              cell_origin_x,
+              cell_origin_y,
+              c.byte_start,
+              c.byte_end,
+              viewport_top,
+              viewport_bottom,
+            ) {
+              let snippet = extract_buffer_substring(&cell.buffer, c.byte_start, c.byte_end);
+              if snippet.is_empty() {
+                continue;
+              }
+              out.push(HintTarget {
+                action: HintAction::CopyCode(snippet),
+                badge_x: bx,
+                badge_y: by,
+                align_right: true,
+              });
+            }
+          }
+        }
+      }
+    }
+    _ => {}
+  }
+}
+
+/// True iff at least one of `buffer`'s visual-line rects sits fully
+/// inside `[viewport_top, viewport_bottom]` once translated by
+/// `origin_y`. Used by the code-block visibility filter to handle
+/// blocks too tall to ever reach the 70 % threshold.
+fn any_full_line_visible(
+  buffer: &cosmic_text::Buffer,
+  origin_y: f32,
+  viewport_top: f32,
+  viewport_bottom: f32,
+) -> bool {
+  let line_height = buffer.metrics().line_height;
+  for run in buffer.layout_runs() {
+    let abs_top = origin_y + run.line_top;
+    let abs_bot = abs_top + line_height;
+    if abs_top >= viewport_top && abs_bot <= viewport_bottom {
+      return true;
+    }
+  }
+  false
+}
+
+/// For a byte range inside `buffer`, find the first visual-line rect
+/// that is fully inside `[viewport_top, viewport_bottom]`. Returns
+/// the badge anchor in document space (top-left of that rect). `None`
+/// if no fully-visible run covers the byte range.
+fn first_visible_run_anchor(
+  buffer: &cosmic_text::Buffer,
+  origin_x: f32,
+  origin_y: f32,
+  byte_start: usize,
+  byte_end: usize,
+  viewport_top: f32,
+  viewport_bottom: f32,
+) -> Option<(f32, f32)> {
+  let line_height = buffer.metrics().line_height;
+  for run in buffer.layout_runs() {
+    let mut min_x: Option<f32> = None;
+    for g in run.glyphs.iter() {
+      if g.end <= byte_start || g.start >= byte_end {
+        continue;
+      }
+      min_x = Some(min_x.map(|m| m.min(g.x)).unwrap_or(g.x));
+    }
+    let Some(local_x) = min_x else {
+      continue;
+    };
+    let abs_top = origin_y + run.line_top;
+    let abs_bot = abs_top + line_height;
+    if abs_top < viewport_top || abs_bot > viewport_bottom {
+      continue;
+    }
+    return Some((origin_x + local_x, abs_top));
+  }
+  None
+}
+
+/// Extract the substring from a buffer's text by byte range. cosmic_text
+/// `Buffer.lines` is a Vec<BufferLine>; for inline-code spans inside
+/// text/cell buffers there is exactly one line, and the byte range
+/// indexes into that line's text. For multi-line buffers we walk
+/// lines and slice within whichever one contains the range — the
+/// loop short-circuits on the first hit so this is O(lines).
+fn extract_buffer_substring(buffer: &cosmic_text::Buffer, start: usize, end: usize) -> String {
+  if start >= end {
+    return String::new();
+  }
+  let mut acc = 0usize;
+  for line in buffer.lines.iter() {
+    let text = line.text();
+    let line_len = text.len();
+    let line_start = acc;
+    let line_end = acc + line_len;
+    if start >= line_start && end <= line_end + 1 {
+      // Range fits in this line (allow end == line_end + 1 to handle
+      // a trailing newline byte that some sources include).
+      let s = (start - line_start).min(line_len);
+      let e = (end - line_start).min(line_len);
+      // Snap to char boundaries to avoid panicking on multi-byte
+      // characters whose middle a span happens to overlap.
+      let s = floor_char_boundary(text, s);
+      let e = floor_char_boundary(text, e);
+      return text[s..e].to_string();
+    }
+    acc = line_end + 1; // +1 for the implicit `\n` between BufferLines
+  }
+  // Fallback: first line, clamped.
+  if let Some(first) = buffer.lines.first() {
+    let text = first.text();
+    let s = floor_char_boundary(text, start.min(text.len()));
+    let e = floor_char_boundary(text, end.min(text.len()));
+    if s < e {
+      return text[s..e].to_string();
+    }
+  }
+  String::new()
+}
+
+/// `str::floor_char_boundary` is unstable on stable rust (1.78). Local
+/// shim — walks back at most 3 bytes (UTF-8 max char width is 4) so
+/// the slicing index lands on a char boundary.
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+  if idx >= s.len() {
+    return s.len();
+  }
+  while idx > 0 && !s.is_char_boundary(idx) {
+    idx -= 1;
+  }
+  idx
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn labels_single_letter_under_capacity() {
+    let labs = build_hint_labels(5, "FJDKSL");
+    assert_eq!(labs, vec!["F", "J", "D", "K", "S"]);
+  }
+
+  #[test]
+  fn labels_full_alphabet_capacity() {
+    let labs = build_hint_labels(6, "FJDKSL");
+    assert_eq!(labs.len(), 6);
+    assert!(labs.iter().all(|l| l.len() == 1));
+  }
+
+  #[test]
+  fn labels_overflow_into_chords() {
+    let labs = build_hint_labels(7, "FJDKSL");
+    // 6-letter alphabet, 7 targets → 5 singles + 1 chord (s=5, L=1).
+    // Capacity 5 + 1*6 = 11 >= 7. ✓
+    assert_eq!(labs.len(), 7);
+    assert!(labs[..5].iter().all(|l| l.len() == 1));
+    assert_eq!(labs[5].len(), 2);
+    assert!(labs[5].starts_with('L')); // last alphabet letter is leader
+  }
+
+  #[test]
+  fn labels_no_prefix_conflicts() {
+    for n in [1, 6, 7, 12, 27, 50] {
+      let labs = build_hint_labels(n, HINT_ALPHABET);
+      for (i, a) in labs.iter().enumerate() {
+        for (j, b) in labs.iter().enumerate() {
+          if i == j {
+            continue;
+          }
+          assert!(
+            !b.starts_with(a.as_str()),
+            "label {a:?} is a prefix of {b:?} at n={n}"
+          );
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn labels_zero() {
+    assert!(build_hint_labels(0, HINT_ALPHABET).is_empty());
+  }
 }
