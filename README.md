@@ -1,30 +1,59 @@
 # view md
 
-Fast (<8.3 ms), native markdown viewer for Linux, OSX, Windows.
+A fast, native markdown viewer for Linux, macOS, and Windows. 
 
-Render a markdown file with rich layout and syntax highlighting in a single frame.
+Renders rich layout and syntax highlighting in a single 120 Hz frame (<8.3 ms).
 
-Vim-like keybinds. Light and dark themes.
+Vim/vimium-style keybinds: `y` yanks code blocks, `f` opens links, `/` searches. 
+
+Light and dark themes.
+
+Built for a terminal + browser workflow.
 
 ![demo](assets/demo.gif)
 
+## Why
+
+Inspired by the raw speed of [tofi](https://github.com/philj56/tofi), a launcher that can open in a single frame.
+
+Quickly jump in and out of markdown files to check their contents: README.md, SKILL.md, PLAN.md...
+
+"I" created this tool to make it as seamless and painless as possible.
+
 ## Here be AI
 
-For your own sanity, do not read the source code.
+For your own sanity, do not read the source code. All planning docs and messy git history included for full transparency. This repository does not represent my personal code standards.
 
 ## Build
 
     cargo build --release
-    ./install.sh   # symlink target/release/vmd to ~/.local/bin, installs .desktop entry
+    # symlink target/release/vmd to ~/.local/bin
+    # installs .desktop metadata entry
+    ./install.sh   
 
 ## Use
 
-    vmd file.md
-    vmd -                   # read from stdin
-    vmd --licenses          # print vmd's license + bundled fonts + all third-party deps
-    vmd --trace             # print timing breakdown
+```sh
+vmd file.md
+vmd -               # read from stdin
+vmd --licenses      # print vmd's license + bundled fonts + all third-party deps
+vmd --trace         # print timing breakdown
+vmd --watch file.md # watches file for changes and live updates
+```
 
-In the app, `?` shows keybinds.
+`?` to show keybinds.
+
+`f` to interact.
+
+`/` to search.
+
+`q` to quit.
+
+`+` to scale up.
+
+`-` to scale down.
+
+`0` to reset scale.
 
 ## License
 
