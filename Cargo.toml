@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "text-processing", "rendering"]
 exclude = [
   "ai/",
   "assets/demo.gif",
+  "assets/demo2.gif",
   "examples/",
   "tests/",
   ".claude/",

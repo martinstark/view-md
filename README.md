@@ -10,7 +10,7 @@ Light and dark themes.
 
 Purpose built for a terminal + browser workflow.
 
-![demo](assets/demo.gif)
+![demo2](assets/demo2.gif)
 
 ## Why
 
