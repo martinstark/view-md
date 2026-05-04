@@ -1,20 +1,28 @@
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 pub static APP_START: OnceLock<Instant> = OnceLock::new();
-static ENABLED: OnceLock<bool> = OnceLock::new();
+// AtomicBool rather than OnceLock<bool>: the flag must be flippable from
+// both `init()` (env var, runs before argv parsing) and `enable()`
+// (`--trace`, parsed after). A OnceLock locks in whichever wrote first
+// and silently drops the other, so `vmd --trace` was a no-op when
+// VMD_TRACE was unset.
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
   let _ = APP_START.set(Instant::now());
-  let _ = ENABLED.set(std::env::var_os("VMD_TRACE").is_some());
+  if std::env::var_os("VMD_TRACE").is_some() {
+    ENABLED.store(true, Ordering::Relaxed);
+  }
 }
 
 pub fn enable() {
-  let _ = ENABLED.set(true);
+  ENABLED.store(true, Ordering::Relaxed);
 }
 
 pub fn enabled() -> bool {
-  *ENABLED.get().unwrap_or(&false)
+  ENABLED.load(Ordering::Relaxed)
 }
 
 #[macro_export]
