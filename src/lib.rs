@@ -46,13 +46,17 @@ pub enum AppEvent {
 /// modest and gets most of the gain on the typical 30–60-block doc.
 const N_LAYOUT_WORKERS: usize = 2;
 
-/// Initial window dimensions (logical px) the speculative layout shapes
-/// against, and the viewport extent used for swash glyph cache
-/// pre-warming. Must match the value `App::resumed` requests via
-/// `Window::default_attributes().with_inner_size(...)` so the
-/// speculative result can be reused without a relayout.
-const INITIAL_W: f32 = 920.0;
-const INITIAL_H: f32 = 1100.0;
+/// Default window dimensions (logical px) used on first run when no
+/// saved size is in prefs. Once the user resizes and exits, the saved
+/// size in `~/.local/state/vmd/prefs` overrides these.
+///
+/// The chosen size is also what the speculative layout shapes against
+/// and what `App::resumed` requests via
+/// `Window::default_attributes().with_inner_size(...)`. As long as the
+/// two stay in sync (via `App.initial_logical_w/h`), the speculative
+/// result is reused without a relayout.
+pub const DEFAULT_W: f32 = 920.0;
+pub const DEFAULT_H: f32 = 1100.0;
 
 pub fn run(
   source: String,
@@ -96,6 +100,8 @@ pub fn run(
     .zoom
     .unwrap_or(1.0)
     .clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
+  let initial_logical_w = prefs.width.unwrap_or(DEFAULT_W);
+  let initial_logical_h = prefs.height.unwrap_or(DEFAULT_H);
 
   let code_blocks: Vec<(String, String)> = doc
     .blocks
@@ -137,12 +143,12 @@ pub fn run(
   // thread overlaps event-loop / window / surface creation in the
   // meantime. If the actual surface dimensions match the assumption,
   // resumed() reuses the laid doc as-is; otherwise it re-runs layout.
-  let assumed_surface_w = INITIAL_W;
+  let assumed_surface_w = initial_logical_w;
   let assumed_dpi_scale = 1.0_f32;
   let assumed_scale = zoom * assumed_dpi_scale.max(1.0);
   let theme = Theme::select(dark);
   let ready_for_layout = highlight_ready.clone();
-  let assumed_viewport_h = INITIAL_H * assumed_dpi_scale.max(1.0);
+  let assumed_viewport_h = initial_logical_h * assumed_dpi_scale.max(1.0);
   let images_for_spec = images.clone();
   let base_dir_for_spec = base_dir.clone();
   let layout_handle = std::thread::spawn(
@@ -233,6 +239,8 @@ pub fn run(
     spec_handle: Some(layout_handle),
     speculative_w: assumed_surface_w,
     speculative_scale: assumed_scale,
+    initial_logical_w,
+    initial_logical_h,
     painted_once: false,
     full_highlight: false,
     upgrade_pending: false,
