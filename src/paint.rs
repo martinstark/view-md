@@ -713,6 +713,32 @@ fn paint_block(
     } => paint_table(
       frame, fs, swash, block.x, y, *block_w, rows, *border, *header_bg, theme,
     ),
+    LaidKind::Frontmatter {
+      buffer,
+      bg,
+      width,
+      pad_x,
+      pad_y,
+    } => {
+      fill_rounded_rect_aa(
+        frame,
+        block.x as i32,
+        y as i32,
+        *width as u32,
+        block.h as u32,
+        6.0,
+        *bg,
+      );
+      draw_buffer(
+        frame,
+        buffer,
+        fs,
+        swash,
+        block.x + *pad_x,
+        y + *pad_y,
+        theme.muted,
+      );
+    }
     LaidKind::Image {
       path,
       alt: _,
