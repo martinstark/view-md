@@ -82,24 +82,15 @@ Measured on a Ryzen 9 9800X3D, Wayland/SwayWM, against `examples/test.md`. Numbe
 
 A typical README cold-launches inside one 120 Hz frame (<8.3 ms exec → present), with one caveat: if there are code blocks in the initial visible frame the launch waits for syntect to finish computing highlights to avoid a redraw. Worst case, this delays launch by one extra frame (~5 ms).
 
-- Bundled fonts, zero-copy. Seven TTFs via `include_bytes!`, handed to
-  `fontdb` as `Source::Binary(Arc<…>)` — no per-`FontSystem` copy of
-  ~400 KB × 7 faces. Skips fontconfig (50 to 150 ms with ~10k fonts
-  installed)
-- mimalloc as global allocator. Shaping and layout churn through small
-  allocations; mimalloc handles them noticeably faster than the system
-  allocator
-- CPU raster, not GPU. `softbuffer` + `tiny-skia` into wl_shm. Skips
-  ~50 to 150 ms of wgpu/NVIDIA driver init that webviews and GPU
-  renderers pay on cold launch
-- Parse, then everything else in parallel. `pulldown-cmark` parses
-  synchronously (microseconds). After that, three pools spin up:
-    - Speculative layout + shape on a background thread
-    - Pre-warm the swash glyph cache for the visible viewport
-    - `syntect` highlight, bounded to four workers
-- Wait briefly for syntect before first paint, but only if code block
-  on first visible frame
-- Skip the `request_redraw` round-trip
-- Glyph raster via `swash.get_image()`
-- Memoize highlights by `(lang, code, theme)`
-- Active theme only at startup
+- bundled fonts, zero-copy. Skips fontconfig (50 to 150 ms with ~10k fonts installed)
+- CPU raster, no GPU. Skips ~50 to 150 ms of gpu driver init
+- mimalloc as global allocator
+- parse, then everything else in parallel:
+    - speculative layout + shape on a background thread
+    - pre-warm the swash glyph cache for the visible viewport
+    - syntax highlight parsing
+- draw without waiting for syntax highlighting thread if no visible code block on first frame
+- skip the `request_redraw` round-trip
+- glyph raster via `swash.get_image()`
+- memoize highlights by `(lang, code, theme)`
+- process active theme only at startup
