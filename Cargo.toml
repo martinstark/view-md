@@ -34,11 +34,13 @@ pulldown-cmark = { version = "0.13", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 arboard = "3"
 opener = "0.8"
-smithay-clipboard = "0.7"
 raw-window-handle = "0.6"
 mimalloc = { version = "0.1", default-features = false }
 notify = "8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-clipboard = "0.7"
 
 [profile.release]
 codegen-units = 1

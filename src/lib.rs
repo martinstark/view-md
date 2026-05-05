@@ -220,6 +220,7 @@ pub fn run(
   // with cheap placeholders for the spec-derived fields; resumed() swaps
   // them in once the join returns.
   let mut app = App {
+    #[cfg(target_os = "linux")]
     wayland_clipboard: None,
     title,
     watch_path,
