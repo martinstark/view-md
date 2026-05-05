@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cosmic_text::{Cursor, FontSystem, SwashCache};
+#[cfg(target_os = "linux")]
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -55,6 +56,7 @@ pub struct App {
   /// `window` so it drops first, while the underlying display is still
   /// alive. Populated in `resumed()` once we have the window handle.
   /// `None` on non-Wayland platforms.
+  #[cfg(target_os = "linux")]
   pub wayland_clipboard: Option<smithay_clipboard::Clipboard>,
   pub title: String,
   /// Set when launched with `--watch <file>`. The watcher thread in
@@ -388,6 +390,7 @@ impl ApplicationHandler<AppEvent> for App {
     // Tie the clipboard to *this* window's wl_display so the compositor
     // grants ownership to the connection that has surface focus. On
     // non-Wayland platforms we fall through to arboard later.
+    #[cfg(target_os = "linux")]
     if let Ok(dh) = window.display_handle()
       && let RawDisplayHandle::Wayland(wd) = dh.as_raw()
     {
@@ -1505,6 +1508,7 @@ impl App {
     // Wayland: store on the smithay-clipboard tied to our window's
     // wl_display. The connection has a focused surface, so the
     // compositor accepts our wl_data_source.
+    #[cfg(target_os = "linux")]
     if let Some(clip) = self.wayland_clipboard.as_ref() {
       clip.store(text);
       crate::trace!("clipboard: smithay {n} chars");
