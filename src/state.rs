@@ -10,6 +10,11 @@ pub struct Prefs {
   /// this only takes effect on stacking/floating WMs and non-Linux.
   pub width: Option<f32>,
   pub height: Option<f32>,
+  /// Last observed `window.scale_factor()`. Used by the speculative
+  /// layout to shape against the right physical-px width on the next
+  /// launch — without it, HiDPI displays always mismatch and discard
+  /// the spec work.
+  pub dpi_scale: Option<f32>,
 }
 
 // Defends against stale prefs after a monitor hot-swap or a saved size
@@ -18,6 +23,8 @@ pub struct Prefs {
 const MIN_DIM: f32 = 200.0;
 const MAX_W: f32 = 8000.0;
 const MAX_H: f32 = 6000.0;
+const MIN_DPI: f32 = 0.5;
+const MAX_DPI: f32 = 8.0;
 
 impl Prefs {
   pub fn empty() -> Self {
@@ -26,6 +33,7 @@ impl Prefs {
       zoom: None,
       width: None,
       height: None,
+      dpi_scale: None,
     }
   }
 }
@@ -68,6 +76,9 @@ pub fn save(prefs: &Prefs) {
   if let Some(h) = prefs.height {
     s.push_str(&format!("height={:.0}\n", h));
   }
+  if let Some(d) = prefs.dpi_scale {
+    s.push_str(&format!("dpi_scale={:.3}\n", d));
+  }
   let _ = fs::write(&path, s);
 }
 
@@ -105,6 +116,14 @@ fn parse(contents: &str) -> Prefs {
           && (MIN_DIM..=MAX_H).contains(&h)
         {
           p.height = Some(h);
+        }
+      }
+      "dpi_scale" => {
+        if let Ok(d) = v.parse::<f32>()
+          && d.is_finite()
+          && (MIN_DPI..=MAX_DPI).contains(&d)
+        {
+          p.dpi_scale = Some(d);
         }
       }
       _ => {}
