@@ -138,15 +138,22 @@ pub fn run(
   crate::trace!("layout_workers_ready");
 
   // Speculative layout (item 7): kick off layout on a background thread
-  // assuming the window will come up at INITIAL_W × INITIAL_H, dpi=1.0,
-  // before we even create the event loop. The thread takes ownership of
-  // doc + painter fs + worker fonts + ready flag, runs the same parallel
-  // layout the resumed() handler would, and returns everything. The main
-  // thread overlaps event-loop / window / surface creation in the
+  // assuming the window will come up at INITIAL_W × INITIAL_H, before we
+  // even create the event loop. The thread takes ownership of doc +
+  // painter fs + worker fonts + ready flag, runs the same parallel
+  // layout the resumed() handler would, and returns everything. The
+  // main thread overlaps event-loop / window / surface creation in the
   // meantime. If the actual surface dimensions match the assumption,
   // resumed() reuses the laid doc as-is; otherwise it re-runs layout.
-  let assumed_surface_w = initial_logical_w;
-  let assumed_dpi_scale = 1.0_f32;
+  //
+  // `assumed_dpi_scale` previously hardcoded 1.0, which always missed on
+  // HiDPI (Retina Mac, fractional Wayland) and discarded the spec work.
+  // We now use the last observed `scale_factor` from prefs, falling back
+  // to a platform-aware default for first launch (Retina is the
+  // overwhelming majority on macOS). `layout_parallel`'s `surface_w` is
+  // physical pixels, so multiply the logical width by the assumed DPI.
+  let assumed_dpi_scale = prefs.dpi_scale.unwrap_or(default_dpi_scale());
+  let assumed_surface_w = initial_logical_w * assumed_dpi_scale;
   let assumed_scale = zoom * assumed_dpi_scale.max(1.0);
   let theme = Theme::select(dark);
   let ready_for_layout = highlight_ready.clone();
@@ -277,6 +284,15 @@ fn detect_dark() -> bool {
     return v == "dark";
   }
   true
+}
+
+/// Best-guess DPI scale used by the speculative layout on first launch
+/// (when prefs has no saved `dpi_scale`). Retina is the overwhelming
+/// majority of Mac displays, so 2.0 is a safer assumption than 1.0
+/// there; everywhere else, 1.0 is the most common case and HiDPI users
+/// pay one mismatched launch before prefs locks in the correct value.
+fn default_dpi_scale() -> f32 {
+  if cfg!(target_os = "macos") { 2.0 } else { 1.0 }
 }
 
 /// Decode each image's pixels in document order so the above-the-fold

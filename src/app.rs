@@ -108,9 +108,10 @@ pub struct App {
   pub speculative_scale: f32,
   /// Initial window dimensions (logical px) requested in `resumed()`.
   /// Defaults to `lib::DEFAULT_W`/`DEFAULT_H` on first run; restored from
-  /// `Prefs.width`/`height` on subsequent launches. Must match the
-  /// values the speculative-layout thread shaped against (`speculative_w`
-  /// at `dpi_scale=1.0`) so the spec result is reused without a relayout.
+  /// `Prefs.width`/`height` on subsequent launches. The
+  /// speculative-layout thread shapes against `initial_logical_w *
+  /// assumed_dpi_scale` (physical px); `resumed()` reuses the spec
+  /// result when the actual surface width and combined scale match.
   pub initial_logical_w: f32,
   pub initial_logical_h: f32,
   /// Set true by the precompute background thread once the syntect cache is
@@ -1405,6 +1406,7 @@ impl App {
       zoom: Some(self.zoom),
       width,
       height,
+      dpi_scale: Some(scale),
     });
   }
 
