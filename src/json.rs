@@ -223,10 +223,7 @@ impl<'a> Parser<'a> {
         }
       }
       Some(c) => {
-        return Err(self.err_owned(format!(
-          "unexpected '{}' while parsing value",
-          char_repr(c)
-        )));
+        return Err(self.err_owned(format!("unexpected '{}' while parsing value", char_repr(c))));
       }
       None => return Err(self.err("unexpected end of input")),
     }
@@ -264,10 +261,7 @@ impl<'a> Parser<'a> {
         Some(b'"') | Some(b'\'') => self.read_string()?,
         Some(b) if is_ident_start(b) => self.read_ident(),
         Some(c) => {
-          return Err(self.err_owned(format!(
-            "expected key, found '{}'",
-            char_repr(c)
-          )));
+          return Err(self.err_owned(format!("expected key, found '{}'", char_repr(c))));
         }
         None => return Err(self.err("expected key, found EOF")),
       };
@@ -285,10 +279,7 @@ impl<'a> Parser<'a> {
           self.bump();
         }
         Some(c) => {
-          return Err(self.err_owned(format!(
-            "expected ':' after key, found '{}'",
-            char_repr(c)
-          )));
+          return Err(self.err_owned(format!("expected ':' after key, found '{}'", char_repr(c))));
         }
         None => return Err(self.err("expected ':' after key, found EOF")),
       }
@@ -958,7 +949,10 @@ mod tests {
 
   #[test]
   fn json5_hex_and_inf() {
-    assert_eq!(fmt("[0xFF, Infinity, -Infinity, NaN]"), "[\n  0xFF,\n  Infinity,\n  -Infinity,\n  NaN\n]");
+    assert_eq!(
+      fmt("[0xFF, Infinity, -Infinity, NaN]"),
+      "[\n  0xFF,\n  Infinity,\n  -Infinity,\n  NaN\n]"
+    );
   }
 
   #[test]
