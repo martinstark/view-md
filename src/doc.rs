@@ -2,6 +2,17 @@ use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEn
 
 use crate::json::JsonRange;
 
+/// Position of a JSON chunk within its chunked group. `First` rounds
+/// only the top corners and pads only at the top; `Last` is the mirror;
+/// `Middle` has no rounded corners and no top/bottom padding so it
+/// stitches seamlessly between siblings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkRole {
+  First,
+  Middle,
+  Last,
+}
+
 #[derive(Debug)]
 pub struct Doc {
   pub blocks: Vec<Block>,
@@ -45,6 +56,13 @@ pub enum Block {
     /// in `lib::run`; markdown-fenced blocks leave this `None` and the
     /// hint mode falls back to the existing whole-block copy target.
     targets: Option<Vec<JsonRange>>,
+    /// `Some(_)` when this block is one slice of a chunked JSON
+    /// document (see `lib::chunk_json`). Layout / paint use the role to
+    /// suppress the inter-block gap, drop top/bottom padding on
+    /// non-edge chunks, and round only the outward-facing corners so
+    /// adjacent chunks render as one continuous block. `None` for
+    /// fenced markdown code blocks and single-chunk JSON.
+    chunk: Option<ChunkRole>,
   },
   Rule,
   Table {
@@ -471,6 +489,7 @@ impl Builder {
             lang,
             code,
             targets: None,
+            chunk: None,
           });
         }
       }

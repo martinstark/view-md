@@ -1160,6 +1160,16 @@ impl App {
             push_line_matches(line.text(), &q_lower, idx, line_i, &mut state.matches);
           }
         }
+        // Unmaterialized JSON chunks: scan the source string directly
+        // so search hits in off-screen content still resolve. By the
+        // time the user navigates to one, `materialize_visible_chunks`
+        // will have shaped it and the highlight paint path will have
+        // a real buffer to anchor against.
+        LaidKind::JsonChunkPlaceholder { code, .. } => {
+          for (line_i, line) in code.split('\n').enumerate() {
+            push_line_matches(line, &q_lower, idx, line_i, &mut state.matches);
+          }
+        }
         _ => {}
       }
     }
@@ -1234,6 +1244,11 @@ impl App {
   /// stays untouched. Returns without opening if no targets pass the
   /// visibility filter.
   fn open_hints(&mut self) {
+    // Hint mode draws from `laid`'s shaped buffers — placeholders have
+    // no glyphs and contribute zero targets — so any chunk that's in
+    // view but still unmaterialized must be shaped first. Cheap and
+    // idempotent.
+    self.materialize_visible_chunks();
     let Some(laid) = self.laid.as_ref() else {
       return;
     };
@@ -1435,17 +1450,40 @@ impl App {
     let mut best: Option<(f32, String, f32, f32)> = None;
     if let Some(laid) = self.laid.as_ref() {
       for block in &laid.blocks {
-        if let LaidKind::CodeBlock { source, .. } = &block.kind {
-          if block.y + block.h < viewport_top || block.y > viewport_bottom {
-            continue;
-          }
-          let center = block.y + block.h / 2.0;
-          let dist = (center - viewport_center).abs();
-          if best.as_ref().is_none_or(|(d, ..)| dist < *d) {
-            let badge_y = block.y.max(viewport_top + margin);
-            let badge_x = block.x + margin;
-            best = Some((dist, source.clone(), badge_x, badge_y));
-          }
+        let (source, chunk_role) = match &block.kind {
+          LaidKind::CodeBlock {
+            source,
+            chunk_role,
+            ..
+          } => (source.clone(), *chunk_role),
+          // Placeholders carry their source verbatim; if the user `y`s
+          // before materialization, yank from there too so chunked
+          // JSON keeps consistent semantics.
+          LaidKind::JsonChunkPlaceholder {
+            code,
+            chunk_role,
+            ..
+          } => (code.clone(), Some(*chunk_role)),
+          _ => continue,
+        };
+        if block.y + block.h < viewport_top || block.y > viewport_bottom {
+          continue;
+        }
+        // For a chunked JSON doc, `y` should yank the whole document
+        // rather than a single 200-line slice — that matches the
+        // pre-chunking behavior (when JSON was one big block) and
+        // matches the user's natural model ("copy this JSON file").
+        let payload = if chunk_role.is_some() {
+          collect_full_json_source(laid)
+        } else {
+          source
+        };
+        let center = block.y + block.h / 2.0;
+        let dist = (center - viewport_center).abs();
+        if best.as_ref().is_none_or(|(d, ..)| dist < *d) {
+          let badge_y = block.y.max(viewport_top + margin);
+          let badge_x = block.x + margin;
+          best = Some((dist, payload, badge_x, badge_y));
         }
       }
     }
@@ -1640,7 +1678,87 @@ impl App {
     self.request_redraw();
   }
 
+  /// Walk `laid.blocks` once; for any `JsonChunkPlaceholder` that
+  /// overlaps the current viewport, shape it via
+  /// `layout::materialize_chunk` and patch the result back into the
+  /// laid doc. The estimated height in the placeholder is rarely
+  /// exact (wrap, sub-pixel rounding), so each materialization
+  /// produces a delta that we propagate to all downstream blocks'
+  /// `y` plus `LaidDoc.total_height`. Block-y shifts are bounded by
+  /// the chunk-size estimate error — typically pixels, occasionally
+  /// up to a line height.
+  fn materialize_visible_chunks(&mut self) {
+    let viewport_top = self.scroll_y;
+    let viewport_bot = viewport_top + self.viewport_h();
+    let scale = self.zoom * self.dpi_scale.max(1.0);
+    let theme = Theme::select(self.dark);
+
+    let Some(laid) = self.laid.as_mut() else {
+      return;
+    };
+    let fs = &mut self.painter.fs;
+
+    let mut total_delta = 0.0_f32;
+    let mut any_changed = false;
+    for block in laid.blocks.iter_mut() {
+      // Apply previously-accumulated deltas so the visibility check
+      // uses the up-to-date y. Each block's y shifts at most once,
+      // independent of how many earlier blocks materialized, because
+      // we mutate it in place as we walk.
+      block.y += total_delta;
+      let visible = block.y + block.h > viewport_top && block.y < viewport_bot;
+      if !visible {
+        continue;
+      }
+      let (code, targets, chunk_role, width) = match &block.kind {
+        LaidKind::JsonChunkPlaceholder {
+          code,
+          targets,
+          chunk_role,
+          width,
+          ..
+        } => (code.clone(), targets.clone(), *chunk_role, *width),
+        _ => continue,
+      };
+      let new_block =
+        crate::layout::materialize_chunk(&code, targets, chunk_role, width, block.x, fs, &theme, scale);
+      let delta = new_block.h - block.h;
+      block.h = new_block.h;
+      block.kind = new_block.kind;
+      total_delta += delta;
+      any_changed = true;
+    }
+
+    if !any_changed {
+      return;
+    }
+
+    laid.total_height += total_delta;
+    // Block-y caches are flat copies of `laid.blocks[i].y`; rebuild
+    // both rather than tracking which deltas applied to which entry.
+    for (i, b) in laid.blocks.iter().enumerate() {
+      laid.block_ys[i] = b.y;
+    }
+    for (i, &block_idx) in laid.heading_block_idxs.iter().enumerate() {
+      laid.heading_ys[i] = laid.blocks[block_idx].y;
+    }
+    // Materialization can extend the doc past the viewport; clamp
+    // scroll back so `G` and bottom-edge scroll don't leave us in
+    // empty space below `total_height`.
+    let max = (laid.total_height - self.viewport_h()).max(0.0);
+    if self.scroll_y > max {
+      self.scroll_y = max;
+    }
+  }
+
   fn redraw(&mut self) {
+    // Lazy JSON-chunk materialization: any chunk that's now overlapping
+    // the viewport but is still a `JsonChunkPlaceholder` gets shaped
+    // here, before paint, so paint sees a real `CodeBlock` with real
+    // glyphs. Cheap (chunk = 200 lines = ~5 ms shape) and runs at most
+    // once per chunk for the lifetime of this `LaidDoc`.
+    self.materialize_visible_chunks();
+
     // Run the in-place code-block upgrade if it was scheduled OR if the
     // syntect cache has just become ready. The latter check folds an
     // upgrade INTO the current redraw whenever possible, avoiding the
@@ -2053,6 +2171,36 @@ pub fn build_hint_labels(n: usize, alphabet: &str) -> Vec<String> {
         break 'outer;
       }
     }
+  }
+  out
+}
+
+/// Concatenate every JSON chunk's source back into the full formatted
+/// document. Used by `y` (yank) on chunked JSON so the user gets the
+/// whole file in their clipboard, not just the slice that happened to
+/// sit under the viewport. Walks both materialized chunks (`CodeBlock`
+/// with `chunk_role: Some`) and unmaterialized ones
+/// (`JsonChunkPlaceholder`) — order matches the doc's block order, so
+/// the result is byte-identical to the original `json::format` output.
+fn collect_full_json_source(laid: &crate::layout::LaidDoc) -> String {
+  let mut out = String::new();
+  let mut first = true;
+  for block in &laid.blocks {
+    let s = match &block.kind {
+      LaidKind::CodeBlock {
+        source,
+        chunk_role: Some(_),
+        ..
+      } => Some(source.as_str()),
+      LaidKind::JsonChunkPlaceholder { code, .. } => Some(code.as_str()),
+      _ => None,
+    };
+    let Some(s) = s else { continue };
+    if !first {
+      out.push('\n');
+    }
+    out.push_str(s);
+    first = false;
   }
   out
 }

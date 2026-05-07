@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use tiny_skia::Color as SkColor;
 
-use crate::doc::{AlertKind, Block, CellAlign, Doc, FootnoteDef, Inline, ListItem};
+use crate::doc::{AlertKind, Block, CellAlign, ChunkRole, Doc, FootnoteDef, Inline, ListItem};
 use crate::highlight::{HlSpan, highlight};
 use crate::images::{self, ImageStore};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
@@ -98,16 +98,25 @@ pub enum LaidKind {
     bg: SkColor,
     width: f32,
     pad_x: f32,
+    /// Top padding only. The block's bottom pad is `0` for First /
+    /// Middle chunks and the same `CODE_PAD_Y * scale` for Last / un-
+    /// chunked. `block.h` already accounts for both, so paint code
+    /// reads `pad_y` as "where does the buffer text start" and
+    /// `block.h` as the full bg height.
     pad_y: f32,
     lang_label: Option<Buffer>,
     lang_label_color: Color,
     lang: String,
     source: String,
-    /// Per-key / per-value byte ranges into `source`. `Some` for the
-    /// synthetic JSON block produced by `lib::run`; `None` for fenced
-    /// markdown code blocks. When `Some`, hint-mode emits one badge per
-    /// range instead of a single whole-block copy hint.
+    /// Per-key / per-value byte ranges into `source`. `Some` for any
+    /// JSON-mode block; `None` for fenced markdown code blocks. When
+    /// `Some`, hint-mode emits one badge per range instead of a single
+    /// whole-block copy hint.
     targets: Option<Vec<JsonRange>>,
+    /// `Some(_)` when this block is a chunk in a chunked JSON document;
+    /// drives corner rounding and inter-block-gap suppression. `None`
+    /// for fenced markdown blocks and single-chunk JSON.
+    chunk_role: Option<ChunkRole>,
   },
   Table {
     block_w: f32,
@@ -125,6 +134,21 @@ pub enum LaidKind {
     alt: String,
     width: f32,
     height: f32,
+  },
+  /// JSON chunk that hasn't been shaped yet. Held in place by an
+  /// estimated `block.h` so the doc's vertical scroll math works while
+  /// the user is nowhere near the chunk; `App::materialize_visible_chunks`
+  /// converts it to a real `CodeBlock` and patches `block.h` /
+  /// downstream block ys when the chunk first enters the viewport.
+  JsonChunkPlaceholder {
+    code: String,
+    targets: Vec<JsonRange>,
+    chunk_role: ChunkRole,
+    bg: SkColor,
+    width: f32,
+    pad_x: f32,
+    /// Top padding only — same convention as `CodeBlock::pad_y`.
+    pad_y: f32,
   },
   /// Frontmatter rendered as a muted key/value box at the top of the
   /// doc. One pre-formatted monospace buffer with column-aligned rows.
@@ -291,7 +315,26 @@ pub fn layout_parallel(
   for (i, slot) in by_idx.into_iter().enumerate() {
     let (mut sub_blocks, sub_h) = slot.expect("missing layout result");
     if i > 0 {
-      let gap = if matches!(doc.blocks[i], Block::Heading { .. }) {
+      // Adjacent JSON chunks abut with no gap so the rendered block
+      // looks continuous; everything else uses the standard heading or
+      // block gap.
+      let prev_chunked = matches!(
+        doc.blocks[i - 1],
+        Block::CodeBlock {
+          chunk: Some(_),
+          ..
+        }
+      );
+      let curr_chunked = matches!(
+        doc.blocks[i],
+        Block::CodeBlock {
+          chunk: Some(_),
+          ..
+        }
+      );
+      let gap = if prev_chunked && curr_chunked {
+        0.0
+      } else if matches!(doc.blocks[i], Block::Heading { .. }) {
         HEADING_GAP_TOP * scale
       } else {
         BLOCK_GAP * scale
@@ -456,7 +499,19 @@ fn layout_block(
       lang,
       code,
       targets,
-    } => layout_code_block(lang, code, targets.clone(), w, x, fs, theme, ctx),
+      chunk,
+    } => match chunk {
+      Some(role @ (ChunkRole::Middle | ChunkRole::Last)) => layout_json_chunk_placeholder(
+        code,
+        targets.clone().unwrap_or_default(),
+        *role,
+        w,
+        x,
+        theme,
+        ctx,
+      ),
+      _ => layout_code_block(lang, code, targets.clone(), *chunk, w, x, fs, theme, ctx),
+    },
     Block::List {
       ordered,
       start,
@@ -835,6 +890,7 @@ fn layout_code_block(
   lang: &str,
   code: &str,
   targets: Option<Vec<JsonRange>>,
+  chunk_role: Option<ChunkRole>,
   w: f32,
   x: f32,
   fs: &mut FontSystem,
@@ -844,6 +900,7 @@ fn layout_code_block(
   let s = ctx.scale;
   let pad_x = CODE_PAD_X * s;
   let pad_y = CODE_PAD_Y * s;
+  let (pad_y_top, pad_y_bot) = chunk_pads(chunk_role, pad_y);
   let inner_w = (w - pad_x * 2.0).max(80.0);
   // JSON-mode block: hand-classify with our own palette to keep JSON5
   // literals (NaN, Infinity, hex) legible on the dark theme — syntect's
@@ -870,8 +927,13 @@ fn layout_code_block(
     inner_w,
   );
   let inner_h = buffer_height(&buf);
-  let block_h = inner_h + pad_y * 2.0;
-  let lang_label = if !lang.is_empty() {
+  let block_h = inner_h + pad_y_top + pad_y_bot;
+  // Only the top edge of a chunked group shows the language label;
+  // Middle / Last would render it on top of code from the previous
+  // chunk.
+  let show_label = !lang.is_empty()
+    && !matches!(chunk_role, Some(ChunkRole::Middle) | Some(ChunkRole::Last));
+  let lang_label = if show_label {
     Some(make_plain_buffer(
       fs,
       &lang.to_uppercase(),
@@ -893,16 +955,132 @@ fn layout_code_block(
         bg: theme.code_bg,
         width: w,
         pad_x,
-        pad_y,
+        pad_y: pad_y_top,
         lang_label,
         lang_label_color: theme.muted,
         lang: lang.to_string(),
         source: code.trim_end_matches('\n').to_string(),
         targets,
+        chunk_role,
       },
     }],
     block_h,
   )
+}
+
+/// Produce a `JsonChunkPlaceholder` for a Middle / Last chunk that
+/// hasn't been shaped yet. The estimated height assumes no soft-wrap
+/// (true for ~all 2-space-indented JSON in a fixed-pitch font);
+/// `materialize_chunk` patches the real height in once the user
+/// scrolls into view.
+fn layout_json_chunk_placeholder(
+  code: &str,
+  targets: Vec<JsonRange>,
+  chunk_role: ChunkRole,
+  w: f32,
+  x: f32,
+  theme: &Theme,
+  ctx: &Ctx,
+) -> (Vec<LaidBlock>, f32) {
+  let s = ctx.scale;
+  let pad_x = CODE_PAD_X * s;
+  let pad_y = CODE_PAD_Y * s;
+  let (pad_y_top, pad_y_bot) = chunk_pads(Some(chunk_role), pad_y);
+  let line_h = CODE_FS * s * CODE_LH_RATIO;
+  let line_count = code.bytes().filter(|&b| b == b'\n').count() + 1;
+  let inner_h = line_h * line_count as f32;
+  let block_h = pad_y_top + inner_h + pad_y_bot;
+  (
+    vec![LaidBlock {
+      y: 0.0,
+      h: block_h,
+      x,
+      kind: LaidKind::JsonChunkPlaceholder {
+        code: code.to_string(),
+        targets,
+        chunk_role,
+        bg: theme.code_bg,
+        width: w,
+        pad_x,
+        pad_y: pad_y_top,
+      },
+    }],
+    block_h,
+  )
+}
+
+/// Top / bottom padding for a code block given its chunk role. First
+/// keeps top pad and drops bottom; Last is the mirror; Middle drops
+/// both. Un-chunked blocks pad both ends as before.
+fn chunk_pads(role: Option<ChunkRole>, pad: f32) -> (f32, f32) {
+  match role {
+    Some(ChunkRole::First) => (pad, 0.0),
+    Some(ChunkRole::Middle) => (0.0, 0.0),
+    Some(ChunkRole::Last) => (0.0, pad),
+    None => (pad, pad),
+  }
+}
+
+/// On-demand layout for a JSON chunk that was previously a placeholder.
+/// Shapes the buffer with full highlighting and returns a finished
+/// `LaidBlock` (with `y = 0`; the caller assigns the real document y).
+/// `materialize_visible_chunks` calls this from the redraw loop the
+/// first time each chunk enters the viewport.
+pub fn materialize_chunk(
+  code: &str,
+  targets: Vec<JsonRange>,
+  chunk_role: ChunkRole,
+  w: f32,
+  x: f32,
+  fs: &mut FontSystem,
+  theme: &Theme,
+  scale: f32,
+) -> LaidBlock {
+  let pad_x = CODE_PAD_X * scale;
+  let pad_y = CODE_PAD_Y * scale;
+  let (pad_y_top, pad_y_bot) = chunk_pads(Some(chunk_role), pad_y);
+  let inner_w = (w - pad_x * 2.0).max(80.0);
+  let spans = crate::json::highlight_canonical(code.trim_end_matches('\n'), theme.is_dark);
+  let buf = build_highlighted_buffer(
+    fs,
+    &spans,
+    CODE_FS * scale,
+    CODE_FS * scale * CODE_LH_RATIO,
+    inner_w,
+  );
+  let inner_h = buffer_height(&buf);
+  let block_h = inner_h + pad_y_top + pad_y_bot;
+  let show_label = matches!(chunk_role, ChunkRole::First);
+  let lang_label = if show_label {
+    Some(make_plain_buffer(
+      fs,
+      "JSON",
+      LANG_LABEL_FS * scale,
+      LANG_LABEL_FS * scale * 1.2,
+      120.0 * scale,
+      FONT_SANS,
+    ))
+  } else {
+    None
+  };
+  LaidBlock {
+    y: 0.0,
+    h: block_h,
+    x,
+    kind: LaidKind::CodeBlock {
+      buffer: buf,
+      bg: theme.code_bg,
+      width: w,
+      pad_x,
+      pad_y: pad_y_top,
+      lang_label,
+      lang_label_color: theme.muted,
+      lang: "json".into(),
+      source: code.trim_end_matches('\n').to_string(),
+      targets: Some(targets),
+      chunk_role: Some(chunk_role),
+    },
+  }
 }
 
 fn build_highlighted_buffer(
@@ -1251,7 +1429,9 @@ pub fn upgrade_code_block_highlights(
     {
       // JSON path skips the syntect upgrade entirely: its colors come
       // from `json::highlight_canonical`, not the syntect cache, so the
-      // first-pass highlight is already final.
+      // first-pass highlight is already final. (Same condition holds
+      // for chunked or single JSON blocks — chunk_role is irrelevant
+      // here.)
       if targets.is_some() {
         continue;
       }
