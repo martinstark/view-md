@@ -1,7 +1,7 @@
 [package]
 name = "vmd"
 version = "0.2.0"
-description = "Fast, native markdown viewer."
+description = "Fast, native viewer for markdown and JSON."
 edition = "2024"
 rust-version = "1.93"
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,7 @@ authors = ["Martin Stark <901824+martinstark@users.noreply.github.com>"]
 repository = "https://github.com/martinstark/view-md"
 homepage = "https://github.com/martinstark/view-md"
 readme = "README.md"
-keywords = ["markdown", "viewer", "cli", "native"]
+keywords = ["markdown", "json", "viewer", "cli", "native"]
 categories = ["command-line-utilities", "text-processing", "rendering"]
 exclude = [
   "ai/",

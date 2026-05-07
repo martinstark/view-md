@@ -5,6 +5,7 @@ pub mod doc;
 pub mod highlight;
 pub mod images;
 pub mod inline;
+pub mod json;
 pub mod layout;
 pub mod licenses;
 pub mod paint;
@@ -66,6 +67,7 @@ pub fn run(
   watch_path: Option<PathBuf>,
   base_dir: Option<PathBuf>,
   anchor: Option<String>,
+  json_mode: bool,
 ) {
   crate::trace!("run_start");
 
@@ -80,7 +82,13 @@ pub fn run(
   let fs = crate::text::build_font_system();
   crate::trace!("fontsystem_ready");
 
-  let doc = crate::doc::parse(&source);
+  let doc = match build_doc(&source, json_mode) {
+    Ok(d) => d,
+    Err(msg) => {
+      eprintln!("vmd: {title}: {msg}");
+      std::process::exit(1);
+    }
+  };
   crate::trace!("doc_parsed");
 
   // Image dimensions need to be known before layout so that block-image
@@ -109,9 +117,16 @@ pub fn run(
     .blocks
     .iter()
     .filter_map(|b| match b {
-      crate::doc::Block::CodeBlock { lang, code } => {
-        Some((lang.clone(), code.trim_end_matches('\n').to_string()))
-      }
+      // JSON-mode blocks (those with parsed targets) skip syntect
+      // entirely — coloring comes from `json::highlight_canonical`. No
+      // point precomputing a syntect cache entry that nobody reads, and
+      // a multi-MB JSON file would otherwise burn ~half a second on
+      // the warmup thread.
+      crate::doc::Block::CodeBlock {
+        lang,
+        code,
+        targets: None,
+      } => Some((lang.clone(), code.trim_end_matches('\n').to_string())),
       _ => None,
     })
     .collect();
@@ -225,6 +240,7 @@ pub fn run(
     title,
     watch_path,
     base_dir,
+    json_mode,
     pending_anchor: anchor,
     images: images.clone(),
     doc: Doc { blocks: Vec::new() },
@@ -261,6 +277,28 @@ pub fn run(
     toast: None,
   };
   event_loop.run_app(&mut app).expect("run_app");
+}
+
+/// Build the document model from a raw source. In JSON mode, run the
+/// parser/formatter and synthesize a single `Block::CodeBlock` carrying
+/// the formatted text plus per-key/per-value byte ranges. In markdown
+/// mode, fall through to pulldown-cmark. Returned `Err(msg)` is a
+/// human-readable parse error already including line:col (used by the
+/// caller to print and exit on first load, or stay on the prior doc on
+/// `--watch` reload).
+pub fn build_doc(source: &str, json_mode: bool) -> Result<crate::doc::Doc, String> {
+  if json_mode {
+    let (formatted, ranges) = crate::json::format(source).map_err(|e| e.to_string())?;
+    Ok(crate::doc::Doc {
+      blocks: vec![crate::doc::Block::CodeBlock {
+        lang: "json".into(),
+        code: formatted,
+        targets: Some(ranges),
+      }],
+    })
+  } else {
+    Ok(crate::doc::parse(source))
+  }
 }
 
 /// Cheap placeholder FontSystem — empty fontdb, no system scan. Used as

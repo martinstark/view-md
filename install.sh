@@ -30,6 +30,7 @@ if [[ "${IS_LINUX}" == "1" ]]; then
   cp vmd.desktop "${DESKTOP_DIR}/vmd.desktop"
   update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
   xdg-mime default vmd.desktop text/markdown 2>/dev/null || true
+  xdg-mime default vmd.desktop application/json 2>/dev/null || true
 fi
 
 echo

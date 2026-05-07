@@ -1,0 +1,28 @@
+{
+  "name": "vmd",
+  "version": "0.2.0",
+  "description": "Fast native viewer for markdown and JSON.",
+  "keywords": ["markdown", "json", "viewer", "wayland"],
+  "platform": {
+    "linux": true,
+    "macos": true,
+    "windows": true
+  },
+  "scaling": [0.5, 1.0, 1.5, 2.0, 3.0],
+  "limits": {
+    "max_zoom": 3,
+    "max_width_px": 8000,
+    "negative_test": -1.5e-3,
+    "infinity_test": null
+  },
+  "deep": {
+    "level1": {
+      "level2": {
+        "level3": ["a", "b", "c"]
+      }
+    }
+  },
+  "escapes": "tab\there, newline\\n, quote\\\", emoji 🔥",
+  "empty_object": {},
+  "empty_array": []
+}

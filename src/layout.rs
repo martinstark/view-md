@@ -9,6 +9,7 @@ use crate::doc::{AlertKind, Block, CellAlign, Doc, FootnoteDef, Inline, ListItem
 use crate::highlight::{HlSpan, highlight};
 use crate::images::{self, ImageStore};
 use crate::inline::{StyledRuns, build_buffer, build_runs};
+use crate::json::JsonRange;
 use crate::text::{FONT_MONO, FONT_SANS, marker_features, mono_features, sans_features};
 use crate::theme::Theme;
 
@@ -102,6 +103,11 @@ pub enum LaidKind {
     lang_label_color: Color,
     lang: String,
     source: String,
+    /// Per-key / per-value byte ranges into `source`. `Some` for the
+    /// synthetic JSON block produced by `lib::run`; `None` for fenced
+    /// markdown code blocks. When `Some`, hint-mode emits one badge per
+    /// range instead of a single whole-block copy hint.
+    targets: Option<Vec<JsonRange>>,
   },
   Table {
     block_w: f32,
@@ -446,7 +452,11 @@ fn layout_block(
       }],
       1.0,
     ),
-    Block::CodeBlock { lang, code } => layout_code_block(lang, code, w, x, fs, theme, ctx),
+    Block::CodeBlock {
+      lang,
+      code,
+      targets,
+    } => layout_code_block(lang, code, targets.clone(), w, x, fs, theme, ctx),
     Block::List {
       ordered,
       start,
@@ -824,6 +834,7 @@ fn build_footnote_label(
 fn layout_code_block(
   lang: &str,
   code: &str,
+  targets: Option<Vec<JsonRange>>,
   w: f32,
   x: f32,
   fs: &mut FontSystem,
@@ -834,12 +845,23 @@ fn layout_code_block(
   let pad_x = CODE_PAD_X * s;
   let pad_y = CODE_PAD_Y * s;
   let inner_w = (w - pad_x * 2.0).max(80.0);
-  let spans = highlight(
-    code.trim_end_matches('\n'),
-    lang,
-    theme.is_dark,
-    ctx.full_highlight,
-  );
+  // JSON-mode block: hand-classify with our own palette to keep JSON5
+  // literals (NaN, Infinity, hex) legible on the dark theme — syntect's
+  // grammar scopes them as "invalid" and their dark color sits a few
+  // points above the background.
+  let spans = if targets.is_some() {
+    Arc::new(crate::json::highlight_canonical(
+      code.trim_end_matches('\n'),
+      theme.is_dark,
+    ))
+  } else {
+    highlight(
+      code.trim_end_matches('\n'),
+      lang,
+      theme.is_dark,
+      ctx.full_highlight,
+    )
+  };
   let buf = build_highlighted_buffer(
     fs,
     spans.as_ref(),
@@ -876,6 +898,7 @@ fn layout_code_block(
         lang_label_color: theme.muted,
         lang: lang.to_string(),
         source: code.trim_end_matches('\n').to_string(),
+        targets,
       },
     }],
     block_h,
@@ -1222,9 +1245,16 @@ pub fn upgrade_code_block_highlights(
       width,
       lang,
       source,
+      targets,
       ..
     } = &mut block.kind
     {
+      // JSON path skips the syntect upgrade entirely: its colors come
+      // from `json::highlight_canonical`, not the syntect cache, so the
+      // first-pass highlight is already final.
+      if targets.is_some() {
+        continue;
+      }
       let inner_w = (*width - *pad_x * 2.0).max(80.0);
       let spans = highlight(source, lang, theme.is_dark, true);
       let new_buf = build_highlighted_buffer(

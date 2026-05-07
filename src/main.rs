@@ -12,12 +12,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn usage() -> ! {
   eprintln!(
-    "vmd — minimal native markdown viewer\n\
+    "vmd — fast native viewer for markdown and JSON\n\
          \n\
-         usage: vmd [flags] <file.md[#anchor] | ->\n\
+         usage: vmd [flags] <file[.md|.json|.jsonc|.json5][#anchor] | ->\n\
          \n\
          flags:\n\
          \x20\x20--watch        reload the file on disk changes\n\
+         \x20\x20--json         force JSON mode (skip extension/content sniff)\n\
          \x20\x20--licenses     print bundled font licenses (SIL OFL 1.1)\n\
          \x20\x20--trace        print timing breakdown (also: VMD_TRACE=1)\n\
          \x20\x20-h, --help     this message\n\
@@ -43,6 +44,7 @@ fn main() -> ExitCode {
   let mut path: Option<String> = None;
   let mut from_stdin = false;
   let mut watch = false;
+  let mut force_json = false;
   for arg in std::env::args().skip(1) {
     match arg.as_str() {
       "--licenses" => {
@@ -54,6 +56,9 @@ fn main() -> ExitCode {
       }
       "--watch" => {
         watch = true;
+      }
+      "--json" => {
+        force_json = true;
       }
       "-h" | "--help" => usage(),
       "-" => from_stdin = true,
@@ -75,13 +80,13 @@ fn main() -> ExitCode {
     return ExitCode::from(2);
   }
 
-  let (source, title, watch_path, base_dir, anchor) = if from_stdin {
+  let (source, title, watch_path, base_dir, anchor, ext_is_json) = if from_stdin {
     let mut buf = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
       eprintln!("vmd: stdin: {e}");
       return ExitCode::from(1);
     }
-    (buf, String::from("stdin"), None, None, None)
+    (buf, String::from("stdin"), None, None, None, false)
   } else if let Some(arg) = path {
     // Split off `#anchor` from the path arg before touching the
     // filesystem. `vmd file.md#section` opens the file and scrolls
@@ -106,13 +111,29 @@ fn main() -> ExitCode {
     };
     let title = file_title(&p);
     let base_dir = p.parent().map(|d| d.to_path_buf());
-    (body, title, watch.then_some(p), base_dir, anchor)
+    let ext_json = matches!(
+      p.extension().and_then(|e| e.to_str()),
+      Some("json" | "jsonc" | "json5"),
+    );
+    (body, title, watch.then_some(p), base_dir, anchor, ext_json)
   } else {
     usage();
   };
 
+  // Mode resolution: --json forces, then extension, then stdin
+  // content-sniff. Once decided, the flag travels with the viewer so
+  // `--watch` reloads round-trip through the same path.
+  let json_mode = force_json || ext_is_json || (from_stdin && vmd::json::looks_like_json(&source));
+
   crate::trace!("source_read");
-  vmd::run(source, title, watch_path, base_dir, anchor);
+  vmd::run(
+    source,
+    title,
+    watch_path,
+    base_dir,
+    anchor,
+    json_mode,
+  );
   ExitCode::SUCCESS
 }
 

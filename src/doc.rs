@@ -1,5 +1,7 @@
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use crate::json::JsonRange;
+
 #[derive(Debug)]
 pub struct Doc {
   pub blocks: Vec<Block>,
@@ -38,6 +40,11 @@ pub enum Block {
   CodeBlock {
     lang: String,
     code: String,
+    /// Per-token byte ranges (keys + values) into `code`. Only populated
+    /// when this block was synthesized from a JSON / JSONC / JSON5 input
+    /// in `lib::run`; markdown-fenced blocks leave this `None` and the
+    /// hint mode falls back to the existing whole-block copy target.
+    targets: Option<Vec<JsonRange>>,
   },
   Rule,
   Table {
@@ -460,7 +467,11 @@ impl Builder {
       }
       TagEnd::CodeBlock => {
         if let Some(Frame::CodeBlock { lang, code }) = self.stack.pop() {
-          self.push_block(Block::CodeBlock { lang, code });
+          self.push_block(Block::CodeBlock {
+            lang,
+            code,
+            targets: None,
+          });
         }
       }
       TagEnd::List(_) => {
