@@ -67,6 +67,10 @@ pub struct App {
   /// Parent directory of the loaded markdown file, used to resolve
   /// relative image paths. `None` for stdin (relative srcs unresolvable).
   pub base_dir: Option<PathBuf>,
+  /// `true` when the input was treated as JSON / JSONC / JSON5. Used by
+  /// the reload path to re-format with the same parser instead of
+  /// falling through to pulldown-cmark.
+  pub json_mode: bool,
   /// Heading anchor parsed from `vmd file.md#section`. Consumed once,
   /// after the first relayout, by `apply_pending_anchor()`. `None` if
   /// the user didn't supply one or after it's been applied.
@@ -969,7 +973,17 @@ impl App {
 
   fn apply_reload(&mut self, source: String) {
     crate::trace!("reload_from_disk bytes={}", source.len());
-    self.doc = crate::doc::parse(&source);
+    // Mid-edit reload: a transient parse error shouldn't blow away the
+    // user's view. Log to stderr and keep the previous doc on screen
+    // until the next save. First-load errors go through `vmd::run` and
+    // exit before the App ever runs.
+    match crate::build_doc(&source, self.json_mode) {
+      Ok(d) => self.doc = d,
+      Err(msg) => {
+        eprintln!("vmd: reload: {msg}");
+        return;
+      }
+    }
     self.selection = None;
     // Reload reflows the doc; captured hint badge positions are
     // referenced to the old layout, so close before we relayout.
@@ -1732,6 +1746,9 @@ impl App {
 
     #[allow(clippy::drop_non_drop)]
     drop(frame);
+    if !self.painted_once {
+      crate::trace!("paint_done");
+    }
     buffer.present().expect("present");
 
     // Recompute the earliest animation deadline among visible images.
@@ -2102,9 +2119,44 @@ fn collect_block_hints(
     LaidKind::CodeBlock {
       source,
       buffer,
+      pad_x,
       pad_y,
+      targets,
       ..
     } => {
+      // JSON-mode block: emit one hint per parsed key/value range. Scale
+      // matters here — a big.json with thousands of targets would make
+      // the naïve per-target `first_visible_run_anchor` walk billions of
+      // glyphs (N_targets × N_runs × N_glyphs). Build a single sorted
+      // index of visible glyphs once and binary-search it per target.
+      // Enveloping containers (whose `{` / `[` started above the
+      // viewport) are filtered out so they don't pile badges at the
+      // viewport top.
+      if let Some(targets) = targets {
+        let buf_origin_x = block.x + *pad_x;
+        let buf_origin_y = block.y + *pad_y;
+        let visible = VisibleGlyphs::build(
+          buffer,
+          buf_origin_x,
+          buf_origin_y,
+          viewport_top,
+          viewport_bottom,
+        );
+        if visible.is_empty() {
+          return;
+        }
+        for r in targets {
+          if let Some((bx, by)) = visible.lookup(r.byte_start, r.byte_end) {
+            out.push(HintTarget {
+              action: HintAction::CopyCode(r.copy.clone()),
+              badge_x: bx,
+              badge_y: by,
+              align_right: true,
+            });
+          }
+        }
+        return;
+      }
       // Eligible if EITHER (a) ≥70 % of the block is visible — fast
       // path that also forgives subpixel rounding at the edges — OR
       // (b) at least one full code line is in view. Branch (b) is
@@ -2210,6 +2262,104 @@ fn any_full_line_visible(
     }
   }
   false
+}
+
+/// One-shot index over a buffer's *visible* glyphs, used by JSON-mode
+/// hint collection. Built by walking `layout_runs()` once with the same
+/// y-sorted viewport cull the painter uses; per-target lookups then
+/// binary-search this index instead of re-walking the whole buffer.
+///
+/// Without this, pressing `f` on a multi-thousand-target document
+/// (e.g. `examples/big.json`) iterates `N_targets × N_runs × N_glyphs`
+/// — easily a billion ops — and freezes the app.
+struct VisibleGlyphs {
+  /// Sorted by `g_end`. Each entry is `(g_end, g_start, x_screen, y_screen)`.
+  /// Sorting by `g_end` lets us binary-search for "first glyph whose end
+  /// passes a given byte offset", which is the natural query.
+  glyphs: Vec<(usize, usize, f32, f32)>,
+}
+
+impl VisibleGlyphs {
+  fn build(
+    buffer: &cosmic_text::Buffer,
+    origin_x: f32,
+    origin_y: f32,
+    viewport_top: f32,
+    viewport_bottom: f32,
+  ) -> Self {
+    let line_h = buffer.metrics().line_height;
+    // cosmic-text's `LayoutGlyph.start`/`.end` are byte offsets *within*
+    // their parent `BufferLine.text()`. Our `JsonRange.byte_start` is
+    // a global offset into the formatted output (with `\n` separators).
+    // Translate per-line glyph offsets to global ones using the same
+    // `len + 1` accumulator as `extract_buffer_substring`. Without this,
+    // lookups only "work" when the target lands on line 0.
+    let mut line_offsets: Vec<usize> = Vec::with_capacity(buffer.lines.len());
+    let mut acc = 0usize;
+    for line in buffer.lines.iter() {
+      line_offsets.push(acc);
+      acc += line.text().len() + 1;
+    }
+
+    let mut glyphs = Vec::new();
+    for run in buffer.layout_runs() {
+      let abs_top = origin_y + run.line_top;
+      let abs_bot = abs_top + line_h;
+      // Run must be fully inside viewport — same predicate
+      // `first_visible_run_anchor` used to use, so badges keep landing
+      // where the previous code put them (no half-clipped lines).
+      if abs_bot < viewport_top {
+        continue;
+      }
+      if abs_top > viewport_bottom {
+        break;
+      }
+      if abs_top < viewport_top || abs_bot > viewport_bottom {
+        continue;
+      }
+      let line_off = line_offsets.get(run.line_i).copied().unwrap_or(0);
+      for g in run.glyphs.iter() {
+        glyphs.push((
+          line_off + g.end,
+          line_off + g.start,
+          origin_x + g.x,
+          abs_top,
+        ));
+      }
+    }
+    Self { glyphs }
+  }
+
+  fn is_empty(&self) -> bool {
+    self.glyphs.is_empty()
+  }
+
+  /// Find the first visible glyph that overlaps `[byte_start, byte_end)`.
+  /// Returns the badge anchor (screen-space x, y of that glyph). Returns
+  /// `None` for ranges with no visible glyph and — by design — for
+  /// enveloping ranges that *started* above the viewport. The latter
+  /// would otherwise pile parent-container badges at the top of the
+  /// viewport on a scrolled doc, since their first overlap is always
+  /// the topmost visible glyph.
+  fn lookup(&self, byte_start: usize, byte_end: usize) -> Option<(f32, f32)> {
+    if byte_start >= byte_end || self.glyphs.is_empty() {
+      return None;
+    }
+    // Filter rule: target must start at or after the first visible
+    // glyph. Enveloping parents (whose `{` / `[` is off-screen above)
+    // fail this and don't get a badge.
+    if byte_start < self.glyphs[0].1 {
+      return None;
+    }
+    let idx = self
+      .glyphs
+      .partition_point(|&(g_end, _, _, _)| g_end <= byte_start);
+    let (_, g_start, x, y) = *self.glyphs.get(idx)?;
+    if g_start >= byte_end {
+      return None;
+    }
+    Some((x, y))
+  }
 }
 
 /// For a byte range inside `buffer`, find the first visual-line rect

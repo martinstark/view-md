@@ -1,16 +1,41 @@
 # view md
 
-A fast, native markdown viewer for Linux, macOS, and Windows. 
+A fast, native viewer for markdown and JSON, on Linux, macOS, and Windows.
 
 Renders rich layout in a single 120 Hz frame (<8.3 ms).
 
-Vim/vimium-style keybinds: `y` yanks code, `f` opens links, `/` searches. 
+Vim/vimium-style keybinds: `y` yanks code, `f` opens links, `/` searches.
 
 Light and dark themes.
 
 Purpose built for a terminal + browser workflow.
 
 ![demo2](assets/demo2.gif)
+
+## JSON / JSONC / JSON5
+
+`vmd` doubles as a JSON viewer. Pass a `.json` / `.jsonc` / `.json5`
+file (or pipe JSON to stdin, or pass `--json` to force the mode) and
+the file is reformatted with canonical 2-space indentation and rendered
+as a single syntax-highlighted block. JSONC and JSON5 input is accepted —
+comments, trailing commas, unquoted keys, single quotes, hex literals,
+±Infinity / NaN — but comments are dropped from the rendered view.
+
+`f` opens vimium-style hint mode: each key gets one badge (copies the
+key name) and each value gets one (copies the literal for primitives,
+or the formatted subtree for objects and arrays). Invalid JSON exits
+non-zero with a `line:col` error.
+
+Try the included stress demo:
+
+```sh
+vmd examples/big.json   # 770 KB, ~35 k lines
+```
+
+The "single 120 Hz frame" budget applies to typical README-sized docs.
+Multi-megabyte JSON files take longer — cold launch on the 770 KB
+demo is ~800 ms on a 9800X3D, dominated by cosmic-text shaping and
+softbuffer rasterization of every line.
 
 ## Why
 
@@ -35,8 +60,10 @@ For your own sanity, do not read the source code. All planning docs and messy gi
 
 ```sh
 vmd file.md
+vmd file.json         # JSON / JSONC / JSON5
 vmd 'file.md#section' # open at anchor
-vmd -                 # read from stdin
+vmd -                 # read from stdin (sniffs JSON vs markdown)
+vmd --json -          # force JSON mode on stdin
 vmd --licenses        # print vmd's license + bundled fonts + all third-party deps
 vmd --trace           # print timing breakdown
 vmd --watch file.md   # watches file for changes and live updates

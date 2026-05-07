@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=vmd
-Comment=Minimal markdown viewer
+Comment=Fast native viewer for markdown and JSON
 Exec=vmd %f
-MimeType=text/markdown;
+MimeType=text/markdown;application/json;
 NoDisplay=true
 Terminal=false
 Categories=Utility;

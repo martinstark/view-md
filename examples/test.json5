@@ -1,0 +1,19 @@
+// JSON5 smoke test: comments, unquoted keys, single-quoted strings,
+// trailing commas, hex literals, ±Infinity / NaN, and a positive sign.
+{
+  name: 'vmd',
+  /* block comment between members */
+  version: 0.2,
+  flags: {
+    debug: false,
+    masked: 0xFF,
+    nan_value: NaN,
+    inf_pos: +Infinity,
+    inf_neg: -Infinity,
+  },
+  list: [
+    'one',
+    "two",
+    3,
+  ],
+}

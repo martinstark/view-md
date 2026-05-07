@@ -260,10 +260,27 @@ fn fill_rounded_rect_aa(frame: &mut Frame, x: i32, y: i32, w: u32, h: u32, r: f3
   if w == 0 || h == 0 {
     return;
   }
-  let Some(mut pm) = Pixmap::new(w, h) else {
+  // Clip the scratch pixmap to the frame's visible vertical window. A
+  // block taller than the viewport (e.g. a multi-MB JSON code block:
+  // 35 k lines × 21 px ≈ 700 k px tall) would otherwise allocate a
+  // gigabyte-scale pixmap and AA-fill the whole path even though all
+  // but a sliver is off-screen. Horizontal clipping isn't needed: code
+  // blocks fit the content column.
+  let frame_h = frame.height as i32;
+  let visible_top = y.max(0);
+  let visible_bot = (y + h as i32).min(frame_h);
+  if visible_top >= visible_bot {
+    return;
+  }
+  let visible_h = (visible_bot - visible_top) as u32;
+  let Some(mut pm) = Pixmap::new(w, visible_h) else {
     return;
   };
-  let Some(path) = rounded_rect(0.0, 0.0, w as f32, h as f32, r) else {
+  // Anchor the path against the original block: shift its top-left up by
+  // (visible_top - y) so the rounded corners line up at the block's true
+  // edges, even when those edges sit off-screen.
+  let path_y = (y - visible_top) as f32;
+  let Some(path) = rounded_rect(0.0, path_y, w as f32, h as f32, r) else {
     return;
   };
   let mut paint = tiny_skia::Paint::default();
@@ -276,7 +293,7 @@ fn fill_rounded_rect_aa(frame: &mut Frame, x: i32, y: i32, w: u32, h: u32, r: f3
     Transform::identity(),
     None,
   );
-  frame.composite_pixmap(x, y, &pm);
+  frame.composite_pixmap(x, visible_top, &pm);
 }
 
 /// Anti-aliased rounded-rect stroke (outline). Same approach as
@@ -294,10 +311,18 @@ fn stroke_rounded_rect_aa(
   if w == 0 || h == 0 {
     return;
   }
-  let Some(mut pm) = Pixmap::new(w, h) else {
+  let frame_h = frame.height as i32;
+  let visible_top = y.max(0);
+  let visible_bot = (y + h as i32).min(frame_h);
+  if visible_top >= visible_bot {
+    return;
+  }
+  let visible_h = (visible_bot - visible_top) as u32;
+  let Some(mut pm) = Pixmap::new(w, visible_h) else {
     return;
   };
-  let Some(path) = rounded_rect(0.0, 0.0, w as f32, h as f32, r) else {
+  let path_y = (y - visible_top) as f32;
+  let Some(path) = rounded_rect(0.0, path_y, w as f32, h as f32, r) else {
     return;
   };
   let mut paint = tiny_skia::Paint::default();
@@ -308,7 +333,7 @@ fn stroke_rounded_rect_aa(
     ..Default::default()
   };
   pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-  frame.composite_pixmap(x, y, &pm);
+  frame.composite_pixmap(x, visible_top, &pm);
 }
 
 pub struct Painter {
@@ -1233,7 +1258,16 @@ fn draw_run_lines(
 ) {
   let metrics = buf.metrics();
   let font_size = metrics.font_size;
+  let line_height = metrics.line_height;
+  let frame_h = frame.height as f32;
   for run in buf.layout_runs() {
+    let run_top = oy + run.line_top;
+    if run_top + line_height < 0.0 {
+      continue;
+    }
+    if run_top > frame_h {
+      break;
+    }
     let mut x_start: Option<f32> = None;
     let mut x_end: Option<f32> = None;
     for g in run.glyphs.iter() {
@@ -1316,7 +1350,18 @@ fn draw_byte_range_rect(
   alpha: u8,
 ) {
   let line_height = buf.metrics().line_height;
+  let frame_h = frame.height as f32;
   for run in buf.layout_runs() {
+    // Mirror the cull in `draw_buffer`: skip runs above the viewport and
+    // stop once we're past the bottom. Search-hit highlights walk every
+    // run today; on the JSON doc that's 35 k iterations per match.
+    let run_top = oy + run.line_top;
+    if run_top + line_height < 0.0 {
+      continue;
+    }
+    if run_top > frame_h {
+      break;
+    }
     if run.line_i != line_i {
       continue;
     }
@@ -1354,7 +1399,15 @@ fn draw_run_pills(
 ) {
   let line_height = buf.metrics().line_height;
   let (rgb, alpha) = sk_to_rgba(bg);
+  let frame_h = frame.height as f32;
   for run in buf.layout_runs() {
+    let run_top = oy + run.line_top;
+    if run_top + line_height < 0.0 {
+      continue;
+    }
+    if run_top > frame_h {
+      break;
+    }
     let mut x_start: Option<f32> = None;
     let mut x_end: Option<f32> = None;
     for g in run.glyphs.iter() {
@@ -1449,7 +1502,15 @@ fn paint_block_selection(
   // does the per-pixel blend without a scratch pixmap — cheaper than
   // composite_pixmap for axis-aligned rects.
   let (rgb, alpha) = sk_to_rgba(bg);
+  let frame_h = frame.height as f32;
   for run in buffer.layout_runs() {
+    let run_top = oy + run.line_top;
+    if run_top + line_height < 0.0 {
+      continue;
+    }
+    if run_top > frame_h {
+      break;
+    }
     let line_idx = run.line_i;
     let after_start = start.is_none_or(|s| line_idx > s.line);
     let before_end = end.is_none_or(|e| line_idx < e.line);
@@ -1540,9 +1601,23 @@ pub fn draw_buffer(
   let stride = frame.width as usize;
   let fw = frame.width as i32;
   let fh = frame.height as i32;
+  let line_h = buf.metrics().line_height;
+  let frame_h = frame.height as f32;
+  let oy_f = oy;
   let ox = ox as i32;
   let oy = oy as i32;
   for run in buf.layout_runs() {
+    // Per-run viewport cull. `layout_runs` is y-sorted by `line_top`, so
+    // once we cross the bottom edge we can stop. Without this, a giant
+    // buffer (e.g. JSON doc with 35 k lines) re-iterates every run and
+    // probes the swash cache per glyph every frame.
+    let run_top = oy_f + run.line_top;
+    if run_top + line_h < 0.0 {
+      continue;
+    }
+    if run_top > frame_h {
+      break;
+    }
     for glyph in run.glyphs.iter() {
       let physical = glyph.physical((0., run.line_y), 1.0);
       let glyph_color = glyph.color_opt.unwrap_or(color);
