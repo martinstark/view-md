@@ -126,14 +126,7 @@ fn main() -> ExitCode {
   let json_mode = force_json || ext_is_json || (from_stdin && vmd::json::looks_like_json(&source));
 
   crate::trace!("source_read");
-  vmd::run(
-    source,
-    title,
-    watch_path,
-    base_dir,
-    anchor,
-    json_mode,
-  );
+  vmd::run(source, title, watch_path, base_dir, anchor, json_mode);
   ExitCode::SUCCESS
 }
 

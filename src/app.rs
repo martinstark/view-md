@@ -1452,17 +1452,13 @@ impl App {
       for block in &laid.blocks {
         let (source, chunk_role) = match &block.kind {
           LaidKind::CodeBlock {
-            source,
-            chunk_role,
-            ..
+            source, chunk_role, ..
           } => (source.clone(), *chunk_role),
           // Placeholders carry their source verbatim; if the user `y`s
           // before materialization, yank from there too so chunked
           // JSON keeps consistent semantics.
           LaidKind::JsonChunkPlaceholder {
-            code,
-            chunk_role,
-            ..
+            code, chunk_role, ..
           } => (code.clone(), Some(*chunk_role)),
           _ => continue,
         };
@@ -1720,8 +1716,9 @@ impl App {
         } => (code.clone(), targets.clone(), *chunk_role, *width),
         _ => continue,
       };
-      let new_block =
-        crate::layout::materialize_chunk(&code, targets, chunk_role, width, block.x, fs, &theme, scale);
+      let new_block = crate::layout::materialize_chunk(
+        &code, targets, chunk_role, width, block.x, fs, &theme, scale,
+      );
       let delta = new_block.h - block.h;
       block.h = new_block.h;
       block.kind = new_block.kind;

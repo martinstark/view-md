@@ -318,20 +318,8 @@ pub fn layout_parallel(
       // Adjacent JSON chunks abut with no gap so the rendered block
       // looks continuous; everything else uses the standard heading or
       // block gap.
-      let prev_chunked = matches!(
-        doc.blocks[i - 1],
-        Block::CodeBlock {
-          chunk: Some(_),
-          ..
-        }
-      );
-      let curr_chunked = matches!(
-        doc.blocks[i],
-        Block::CodeBlock {
-          chunk: Some(_),
-          ..
-        }
-      );
+      let prev_chunked = matches!(doc.blocks[i - 1], Block::CodeBlock { chunk: Some(_), .. });
+      let curr_chunked = matches!(doc.blocks[i], Block::CodeBlock { chunk: Some(_), .. });
       let gap = if prev_chunked && curr_chunked {
         0.0
       } else if matches!(doc.blocks[i], Block::Heading { .. }) {
@@ -931,8 +919,8 @@ fn layout_code_block(
   // Only the top edge of a chunked group shows the language label;
   // Middle / Last would render it on top of code from the previous
   // chunk.
-  let show_label = !lang.is_empty()
-    && !matches!(chunk_role, Some(ChunkRole::Middle) | Some(ChunkRole::Last));
+  let show_label =
+    !lang.is_empty() && !matches!(chunk_role, Some(ChunkRole::Middle) | Some(ChunkRole::Last));
   let lang_label = if show_label {
     Some(make_plain_buffer(
       fs,
