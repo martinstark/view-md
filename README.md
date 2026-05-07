@@ -14,28 +14,18 @@ Purpose built for a terminal + browser workflow.
 
 ## JSON / JSONC / JSON5
 
-`vmd` doubles as a JSON viewer. Pass a `.json` / `.jsonc` / `.json5`
-file (or pipe JSON to stdin, or pass `--json` to force the mode) and
-the file is reformatted with canonical 2-space indentation and rendered
-as a single syntax-highlighted block. JSONC and JSON5 input is accepted —
-comments, trailing commas, unquoted keys, single quotes, hex literals,
-±Infinity / NaN — but comments are dropped from the rendered view.
+Pass `.json` / `.jsonc` / `.json5`, pipe JSON to stdin, or use `--json`.
+Input is reformatted with canonical 2-space indentation; JSONC and
+JSON5 extras (comments, trailing commas, unquoted keys, single quotes,
+hex, ±Infinity, NaN) are accepted but comments aren't rendered.
+Invalid JSON exits 1 with a `line:col` error.
 
-`f` opens vimium-style hint mode: each key gets one badge (copies the
-key name) and each value gets one (copies the literal for primitives,
-or the formatted subtree for objects and arrays). Invalid JSON exits
-non-zero with a `line:col` error.
+`f` puts a hint badge on every visible key (copies the bare name) and
+every value (copies primitives verbatim; copies the formatted subtree
+for objects and arrays).
 
-Try the included stress demo:
-
-```sh
-vmd examples/big.json   # 770 KB, ~35 k lines
-```
-
-The "single 120 Hz frame" budget applies to typical README-sized docs.
-Multi-megabyte JSON files take longer — cold launch on the 770 KB
-demo is ~800 ms on a 9800X3D, dominated by cosmic-text shaping and
-softbuffer rasterization of every line.
+Big files use chunked lazy layout — `examples/big.json` (770 KB,
+~35 k lines) cold-launches in one frame on a 9800X3D.
 
 ## Why
 
