@@ -126,6 +126,7 @@ pub fn run(
         lang,
         code,
         targets: None,
+        ..
       } => Some((lang.clone(), code.trim_end_matches('\n').to_string())),
       _ => None,
     })
@@ -279,26 +280,126 @@ pub fn run(
   event_loop.run_app(&mut app).expect("run_app");
 }
 
+/// Lines per JSON chunk. Picked to balance two pressures: small enough
+/// that one chunk's cosmic-text shape stays sub-frame (~5 ms at 200
+/// lines), big enough that the chunk count for typical multi-MB JSON
+/// stays in the low hundreds — keeping the per-chunk bookkeeping (block
+/// list, materialization scan) cheap.
+const JSON_CHUNK_LINES: usize = 200;
+
 /// Build the document model from a raw source. In JSON mode, run the
-/// parser/formatter and synthesize a single `Block::CodeBlock` carrying
-/// the formatted text plus per-key/per-value byte ranges. In markdown
-/// mode, fall through to pulldown-cmark. Returned `Err(msg)` is a
-/// human-readable parse error already including line:col (used by the
-/// caller to print and exit on first load, or stay on the prior doc on
-/// `--watch` reload).
+/// parser/formatter and split the formatted output into chunks; in
+/// markdown mode, fall through to pulldown-cmark. Returned `Err(msg)`
+/// is a human-readable parse error already including line:col (used by
+/// the caller to print and exit on first load, or stay on the prior
+/// doc on `--watch` reload).
 pub fn build_doc(source: &str, json_mode: bool) -> Result<crate::doc::Doc, String> {
   if json_mode {
     let (formatted, ranges) = crate::json::format(source).map_err(|e| e.to_string())?;
-    Ok(crate::doc::Doc {
-      blocks: vec![crate::doc::Block::CodeBlock {
-        lang: "json".into(),
-        code: formatted,
-        targets: Some(ranges),
-      }],
-    })
+    Ok(chunk_json(&formatted, ranges))
   } else {
     Ok(crate::doc::parse(source))
   }
+}
+
+/// Slice the formatted JSON output into `JSON_CHUNK_LINES`-line chunks,
+/// each becoming its own `Block::CodeBlock` so the painter's existing
+/// block-level viewport cull handles paint cost — and so chunks past
+/// the visible window can stay as cheap unshaped placeholders until
+/// the user scrolls to them. Targets get partitioned to whichever
+/// chunk contains their byte_start; ranges that span multiple chunks
+/// (typically root containers) are dropped, which matches the
+/// pre-chunked envelope filter's behavior anyway.
+///
+/// Documents short enough to fit in one chunk skip all of this and
+/// emit a single un-roled CodeBlock — paint and hint paths then look
+/// identical to the pre-chunking implementation.
+fn chunk_json(formatted: &str, targets: Vec<crate::json::JsonRange>) -> crate::doc::Doc {
+  use crate::doc::{Block, ChunkRole, Doc};
+
+  // line_starts[i] = byte offset of the start of source line i.
+  let mut line_starts: Vec<usize> = vec![0];
+  for (i, b) in formatted.bytes().enumerate() {
+    if b == b'\n' {
+      line_starts.push(i + 1);
+    }
+  }
+  let total_lines = line_starts.len();
+
+  if total_lines <= JSON_CHUNK_LINES {
+    return Doc {
+      blocks: vec![Block::CodeBlock {
+        lang: "json".into(),
+        code: formatted.to_string(),
+        targets: Some(targets),
+        chunk: None,
+      }],
+    };
+  }
+
+  let n_chunks = total_lines.div_ceil(JSON_CHUNK_LINES);
+  // Byte range each chunk owns: [chunk_start, chunk_end). chunk_end
+  // excludes the `\n` separator that joins chunks back together — keeps
+  // chunk-local byte offsets aligned with the substring we hand to
+  // cosmic-text below.
+  let chunk_starts: Vec<usize> = (0..n_chunks)
+    .map(|i| line_starts[i * JSON_CHUNK_LINES])
+    .collect();
+  let chunk_ends: Vec<usize> = (0..n_chunks)
+    .map(|i| {
+      let next = (i + 1) * JSON_CHUNK_LINES;
+      if next < total_lines {
+        line_starts[next] - 1
+      } else {
+        formatted.len()
+      }
+    })
+    .collect();
+
+  let mut targets_by_chunk: Vec<Vec<crate::json::JsonRange>> =
+    (0..n_chunks).map(|_| Vec::new()).collect();
+  for t in targets {
+    let idx = match chunk_starts.binary_search(&t.byte_start) {
+      Ok(i) => i,
+      Err(i) => i.saturating_sub(1),
+    };
+    if idx >= n_chunks {
+      continue;
+    }
+    let cs = chunk_starts[idx];
+    let ce = chunk_ends[idx];
+    if t.byte_end > ce {
+      // Spans into the next chunk; drop. Same outcome as the prior
+      // single-buffer envelope filter for parent containers.
+      continue;
+    }
+    targets_by_chunk[idx].push(crate::json::JsonRange {
+      byte_start: t.byte_start - cs,
+      byte_end: t.byte_end - cs,
+      copy: t.copy,
+    });
+  }
+
+  let mut blocks: Vec<Block> = Vec::with_capacity(n_chunks);
+  for i in 0..n_chunks {
+    let cs = chunk_starts[i];
+    let ce = chunk_ends[i];
+    let role = if i == 0 {
+      ChunkRole::First
+    } else if i == n_chunks - 1 {
+      ChunkRole::Last
+    } else {
+      ChunkRole::Middle
+    };
+    let chunk_targets = std::mem::take(&mut targets_by_chunk[i]);
+    blocks.push(Block::CodeBlock {
+      lang: "json".into(),
+      code: formatted[cs..ce].to_string(),
+      targets: Some(chunk_targets),
+      chunk: Some(role),
+    });
+  }
+  Doc { blocks }
 }
 
 /// Cheap placeholder FontSystem — empty fontdb, no system scan. Used as

@@ -935,16 +935,17 @@ fn paint_block(
       pad_y,
       lang_label,
       lang_label_color,
+      chunk_role,
       ..
     } => {
-      fill_rounded_rect_aa(
+      fill_chunk_bg(
         frame,
         block.x as i32,
         y as i32,
         *width as u32,
         block.h as u32,
-        6.0,
         *bg,
+        *chunk_role,
       );
       if let Some(label) = lang_label {
         let label_w = label
@@ -1019,7 +1020,158 @@ fn paint_block(
       theme,
       anim_elapsed_ms,
     ),
+    LaidKind::JsonChunkPlaceholder {
+      bg,
+      width,
+      chunk_role,
+      ..
+    } => {
+      // Pre-shape stand-in: just the bg fill, no text. Paint usually
+      // doesn't see this — `materialize_visible_chunks` runs first and
+      // converts any placeholder overlapping the viewport to a real
+      // CodeBlock — but if a fast scroll outpaces materialization we
+      // at least keep the column filled instead of flashing the page
+      // background through.
+      fill_chunk_bg(
+        frame,
+        block.x as i32,
+        y as i32,
+        *width as u32,
+        block.h as u32,
+        *bg,
+        Some(*chunk_role),
+      );
+    }
   }
+}
+
+/// Background fill for a code block, honoring a possible `chunk_role`.
+/// Round only the outward-facing corners so chunks stitch together
+/// seamlessly: First rounds the top, Last rounds the bottom, Middle is
+/// flat. `None` (un-chunked code blocks) rounds all four corners.
+fn fill_chunk_bg(
+  frame: &mut Frame,
+  x: i32,
+  y: i32,
+  w: u32,
+  h: u32,
+  bg: SkColor,
+  chunk_role: Option<crate::doc::ChunkRole>,
+) {
+  use crate::doc::ChunkRole;
+  let (round_top, round_bot) = match chunk_role {
+    None => (true, true),
+    Some(ChunkRole::First) => (true, false),
+    Some(ChunkRole::Middle) => (false, false),
+    Some(ChunkRole::Last) => (false, true),
+  };
+  match (round_top, round_bot) {
+    (true, true) => fill_rounded_rect_aa(frame, x, y, w, h, 6.0, bg),
+    (false, false) => {
+      // Both edges flat — viewport-clip and use the cheap axis-aligned
+      // fill, mirroring the same clamp `fill_rounded_rect_aa` does so a
+      // tall placeholder doesn't pretend to fill billions of off-screen
+      // pixels.
+      let frame_h = frame.height as i32;
+      let visible_top = y.max(0);
+      let visible_bot = (y + h as i32).min(frame_h);
+      if visible_top >= visible_bot {
+        return;
+      }
+      frame.fill_rect(
+        x,
+        visible_top,
+        w as i32,
+        visible_bot - visible_top,
+        sk_to_argb(bg),
+      );
+    }
+    _ => fill_partial_rounded_rect_aa(frame, x, y, w, h, 6.0, bg, round_top, round_bot),
+  }
+}
+
+/// Same clip-and-fill recipe as `fill_rounded_rect_aa` but with a path
+/// that rounds only the requested edges. Lets a chunk render its own
+/// outward corner without affecting the inward edge it shares with a
+/// neighbor.
+fn fill_partial_rounded_rect_aa(
+  frame: &mut Frame,
+  x: i32,
+  y: i32,
+  w: u32,
+  h: u32,
+  r: f32,
+  color: SkColor,
+  round_top: bool,
+  round_bot: bool,
+) {
+  if w == 0 || h == 0 {
+    return;
+  }
+  let frame_h = frame.height as i32;
+  let visible_top = y.max(0);
+  let visible_bot = (y + h as i32).min(frame_h);
+  if visible_top >= visible_bot {
+    return;
+  }
+  let visible_h = (visible_bot - visible_top) as u32;
+  let Some(mut pm) = Pixmap::new(w, visible_h) else {
+    return;
+  };
+  let path_y = (y - visible_top) as f32;
+  let Some(path) = rounded_rect_partial(0.0, path_y, w as f32, h as f32, r, round_top, round_bot)
+  else {
+    return;
+  };
+  let mut paint = tiny_skia::Paint::default();
+  paint.set_color(color);
+  paint.anti_alias = true;
+  pm.fill_path(
+    &path,
+    &paint,
+    FillRule::Winding,
+    Transform::identity(),
+    None,
+  );
+  frame.composite_pixmap(x, visible_top, &pm);
+}
+
+fn rounded_rect_partial(
+  x: f32,
+  y: f32,
+  w: f32,
+  h: f32,
+  r: f32,
+  round_top: bool,
+  round_bot: bool,
+) -> Option<Path> {
+  let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+  let mut pb = PathBuilder::new();
+  if round_top {
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+  } else {
+    pb.move_to(x, y);
+    pb.line_to(x + w, y);
+  }
+  if round_bot {
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+  } else {
+    pb.line_to(x + w, y + h);
+    pb.line_to(x, y + h);
+  }
+  if round_top {
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+  } else {
+    pb.line_to(x, y);
+  }
+  pb.close();
+  pb.finish()
 }
 
 /// Block-image painter. If frames are loaded, blits the active frame
