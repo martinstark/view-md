@@ -1,4 +1,4 @@
-# view md
+# view md (and json)
 
 A fast, native viewer for markdown and JSON, on Linux, macOS, and Windows.
 
@@ -11,21 +11,6 @@ Light and dark themes.
 Purpose built for a terminal + browser workflow.
 
 ![demo2](assets/demo2.gif)
-
-## JSON / JSONC / JSON5
-
-Pass `.json` / `.jsonc` / `.json5`, pipe JSON to stdin, or use `--json`.
-Input is reformatted with canonical 2-space indentation; JSONC and
-JSON5 extras (comments, trailing commas, unquoted keys, single quotes,
-hex, ±Infinity, NaN) are accepted but comments aren't rendered.
-Invalid JSON exits 1 with a `line:col` error.
-
-`f` puts a hint badge on every visible key (copies the bare name) and
-every value (copies primitives verbatim; copies the formatted subtree
-for objects and arrays).
-
-Big files use chunked lazy layout — `examples/big.json` (770 KB,
-~35 k lines) cold-launches in one frame on a 9800X3D.
 
 ## Why
 
@@ -53,7 +38,7 @@ vmd file.md
 vmd file.json         # JSON / JSONC / JSON5
 vmd 'file.md#section' # open at anchor
 vmd -                 # read from stdin (sniffs JSON vs markdown)
-vmd --json -          # force JSON mode on stdin
+vmd --json -          # force JSON mode on stdin, exits on parser errors
 vmd --licenses        # print vmd's license + bundled fonts + all third-party deps
 vmd --trace           # print timing breakdown
 vmd --watch file.md   # watches file for changes and live updates
